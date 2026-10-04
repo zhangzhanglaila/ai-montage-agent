@@ -237,7 +237,12 @@ class FFmpegExecutor:
         speed_factor: float
     ) -> str:
         """
-        调整视频速度
+        调整视频速度（整段等比）
+
+        修复点：原实现直接写 `-af atempo=speed`，
+          * speed 超出 [0.5, 2.0] 时老版 ffmpeg 会报错；
+          * 源无音轨时 `-af` 会直接失败。
+        现改为多级 atempo 串联，并先探测是否存在音轨。
 
         Args:
             input_path: 输入视频路径
@@ -247,21 +252,35 @@ class FFmpegExecutor:
         Returns:
             输出文件路径
         """
-        # 视频速度调整
-        video_speed = 1.0 / speed_factor
-        audio_speed = speed_factor
+        from packages.montage_engine.src.speed_curve import atempo_chain, has_audio_stream
 
+        video_speed = 1.0 / speed_factor
         cmd = [
             self.ffmpeg_path, "-y",
             "-i", input_path,
             "-vf", f"setpts={video_speed}*PTS",
-            "-af", f"atempo={audio_speed}",
-            output_path
         ]
+        if has_audio_stream(input_path):
+            cmd += ["-af", ",".join(f"atempo={f:.6f}" for f in atempo_chain(speed_factor))]
+        cmd.append(output_path)
 
         subprocess.run(cmd, check=True, capture_output=True)
-
         return output_path
+
+    def adjust_speed_curve(
+        self,
+        input_path: str,
+        output_path: str,
+        curve,
+    ) -> str:
+        """按速度曲线变速（分段等速，逐段对齐保证音画同步）。
+
+        Args:
+            curve: ``montage_engine.SpeedCurve``
+        """
+        from packages.montage_engine.src.speed_curve import apply_speed_curve
+
+        return apply_speed_curve(input_path, output_path, curve)
 
     def add_audio(
         self,

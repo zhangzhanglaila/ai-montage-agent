@@ -1347,6 +1347,13 @@ def main():
     parser.add_argument("--cover-style", type=str, default="bold",
                         choices=["bold", "minimal", "cinematic"],
                         help="封面文字版式，默认 bold")
+    parser.add_argument("--speed-curve", type=str, default=None,
+                        choices=["rush", "slowmo", "hero", "punch"],
+                        help="变速曲线预设: rush 渐快冲刺 / slowmo 冲入慢放 / hero 慢快慢 / punch 脉冲")
+    parser.add_argument("--speed", type=float, default=None,
+                        help="整段等比变速（如 2.0 双速、0.5 半速），优先于 --speed-curve")
+    parser.add_argument("--speed-steps", type=int, default=10,
+                        help="变速曲线分段数（越多越平滑，默认 10）")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
     parser.add_argument("--index-shots", type=str, nargs="?", const="cache/index/shot_index.json",
                         default=None, metavar="PATH",
@@ -1570,6 +1577,27 @@ def main():
             source_lang=args.subtitle_lang or "auto",
             translate_backend=args.translate_backend,
         )
+
+    # 后处理：变速曲线
+    if args.speed is not None or args.speed_curve:
+        try:
+            from packages.montage_engine import SpeedCurve, apply_speed_curve, probe_duration
+
+            dur = probe_duration(result_path)
+            if args.speed is not None:
+                curve = SpeedCurve.constant(dur, args.speed)
+                label = f"整段 {args.speed}x"
+            else:
+                curve = SpeedCurve.from_preset(args.speed_curve, dur, steps=args.speed_steps)
+                label = f"曲线 {args.speed_curve}"
+            print(f"\n  应用变速（{label}）...")
+            print(f"  {curve.describe()}")
+            sped_path = result_path.replace(".mp4", "_speed.mp4")
+            apply_speed_curve(result_path, sped_path, curve)
+            if Path(sped_path).exists():
+                result_path = sped_path
+        except Exception as e:
+            print(f"  变速失败（跳过）: {e}")
 
     # 后处理：封面生成
     if args.cover:
