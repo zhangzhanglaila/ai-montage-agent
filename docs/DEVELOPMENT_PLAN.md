@@ -259,7 +259,11 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 | F1.1 | 音效卡点 | ☑ | `05f21bc` | 2026-10-04 |
 | F1.2 | AI 配音旁白 | ☑ | `d987228` | 2026-10-04 |
 | F1.3 | 封面生成 | ☑ | `de41ea0` | 2026-10-04 |
-| F1.4 | 字幕翻译·双语 | ☑ | `PENDING` | 2026-10-04 |
+| F1.4 | 字幕翻译·双语 | ☑ | `68b7fd0` | 2026-10-04 |
+
+**Phase 1 完成 → 已打 tag `v0.5`。** 新增 4 个能力包（sound / voice / cover / subtitle 扩写），
+CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个参数，
+3 个自包含冒烟脚本（sfx / voice / cover / translate），测试套件 11/11 绿。
 
 ### 额外修复（开发中发现的既有缺陷，独立提交）
 | 说明 | commit | 日期 |
