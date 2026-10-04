@@ -6,6 +6,7 @@
 
 import subprocess
 import json
+import math
 import os
 import random
 from pathlib import Path
@@ -21,6 +22,19 @@ from packages.core_types.models import (
     Shot, Beat, TimelineEntry, HighlightScore,
     BeatAnalysis, MotionData, MusicSegment
 )
+
+
+def _safe_float(value, default: float) -> float:
+    """把可能为 -inf / inf / nan 的数值安全转换为有限 float。
+
+    loudnorm 在遇到静音或极低电平输入时，会把 input_i 等字段输出为 "-inf"，
+    直接带入第二遍滤镜会导致 ffmpeg 报错，因此这里统一兜底。
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return v if math.isfinite(v) else default
 
 
 class ShotDetector:
@@ -939,18 +953,20 @@ class VideoRenderer:
             json_end = stderr.rfind('}') + 1
             if json_start >= 0 and json_end > json_start:
                 stats = _json.loads(stderr[json_start:json_end])
-                measured_i = float(stats.get("input_i", -14.0))
-                measured_tp = float(stats.get("input_tp", -1.5))
-                measured_lra = float(stats.get("input_lra", 11.0))
-                measured_thresh = float(stats.get("input_thresh", -24.0))
-                offset = float(stats.get("target_offset", 0.0))
+                measured_i = _safe_float(stats.get("input_i"), -14.0)
+                measured_tp = _safe_float(stats.get("input_tp"), -1.5)
+                measured_lra = _safe_float(stats.get("input_lra"), 11.0)
+                measured_thresh = _safe_float(stats.get("input_thresh"), -24.0)
+                offset = _safe_float(stats.get("target_offset"), 0.0)
         except (ValueError, KeyError, _json.JSONDecodeError):
             pass
 
-        # 第二遍：应用归一化
-        cmd_normalize = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-af", (
+        # 静音/极低电平输入兜底：double-pass 需要有限且有效的测量值，
+        # 若判定为静音（≤ -70 LUFS）则降级为单遍 loudnorm。
+        if measured_i <= -70.0:
+            af = f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11"
+        else:
+            af = (
                 f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11"
                 f":measured_I={measured_i}"
                 f":measured_TP={measured_tp}"
@@ -958,11 +974,23 @@ class VideoRenderer:
                 f":measured_thresh={measured_thresh}"
                 f":offset={offset}"
                 f":linear=true"
-            ),
+            )
+
+        # 第二遍：应用归一化
+        cmd_normalize = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-af", af,
             "-ar", "44100",
             output_path
         ]
-        subprocess.run(cmd_normalize, capture_output=True, check=True)
+        proc = subprocess.run(cmd_normalize, capture_output=True)
+        if proc.returncode != 0:
+            # 最终兜底：仅重采样到 44.1kHz，不做响度归一化，保证流程不中断
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", input_path, "-ar", "44100",
+                 "-af", "volume=1.0", output_path],
+                capture_output=True, check=True,
+            )
 
     def _adjust_speed(self, input_path: str, output_path: str, speed: float):
         """调整视频速度"""
