@@ -43,6 +43,9 @@ playwright>=1.40.0           # 浏览器自动化（YARN/PlayPhrase/QuoDB/找台
 # openai-whisper>=20231117   # 语音转字幕（需要 ffmpeg）
 # faster-whisper>=0.10.0    # 更快的 whisper 实现
 
+# ============ 配音（TTS） ============
+edge-tts>=7.0.0             # 旁白语音合成（免费、无需 API Key，需要联网）
+
 # ============ 可选依赖 ============
 # madmom>=0.16.1            # 更精确的节拍检测（需要编译）
 # celery[redis]>=5.3.0      # 异步任务队列

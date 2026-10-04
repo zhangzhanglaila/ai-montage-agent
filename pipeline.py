@@ -1042,6 +1042,8 @@ class MontagePipeline:
         harmonize_strength: float = 0.5,
         transition_pattern: dict = None,
         enable_sfx: bool = False,
+        narration_audio: str = None,
+        narration_duck: bool = True,
     ) -> str:
         """
         运行完整混剪流程
@@ -1061,6 +1063,8 @@ class MontagePipeline:
             harmonize_strength: 色彩协调强度 (0.0~1.0)
             transition_pattern: 转场模板
             enable_sfx: 是否启用音效卡点（按强拍/剪辑点叠加音效）
+            narration_audio: 旁白音频路径（有则叠加到成片并自动闪避 BGM）
+            narration_duck: 旁白时段是否自动压低 BGM
 
         Returns:
             输出文件路径
@@ -1227,6 +1231,19 @@ class MontagePipeline:
             except Exception as e:
                 print(f"  音效卡点失败（跳过）: {e}")
 
+        # 后处理：配音旁白（叠加人声轨，旁白时段自动闪避 BGM）
+        if narration_audio:
+            print("\n  叠加配音旁白...")
+            try:
+                from packages.voice_engine import mix_narration
+                narr_path = output_path.replace(".mp4", "_voiced.mp4")
+                mix_narration(result, narration_audio, narr_path, duck=narration_duck)
+                if Path(narr_path).exists():
+                    result = narr_path
+                print("  旁白叠加完成")
+            except Exception as e:
+                print(f"  配音叠加失败（跳过）: {e}")
+
         print("\n" + "=" * 50)
         print("混剪完成!")
         print(f"输出文件: {result}")
@@ -1276,6 +1293,16 @@ def main():
                         help="导出时间轴格式")
     parser.add_argument("--sfx", action="store_true",
                         help="按节拍自动叠加音效（强拍 impact / 剪辑点 whoosh）")
+    parser.add_argument("--narrate", type=str,
+                        help="配音旁白主题（LLM 自动写解说词并合成语音）")
+    parser.add_argument("--script", type=str,
+                        help="自定义旁白脚本文件（每行一句，优先于 --narrate）")
+    parser.add_argument("--narrate-sec", type=int, default=30,
+                        help="旁白目标时长（秒，仅 --narrate 模式）")
+    parser.add_argument("--voice", type=str, default=None,
+                        help="TTS 音色（如 zh-CN-YunxiNeural，默认女声晓晓）")
+    parser.add_argument("--no-duck", action="store_true",
+                        help="旁白时段不自动压低 BGM")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
 
     args = parser.parse_args()
@@ -1385,6 +1412,33 @@ def main():
             if target_dur:
                 print(f"  AI 导演建议时长: {target_dur}s")
 
+    # 配音旁白：生成脚本 → TTS 合成
+    narration_audio = None
+    if args.narrate or args.script:
+        from packages.voice_engine import ScriptWriter, TtsEngine
+
+        writer = ScriptWriter()
+        if args.script:
+            lines = writer.from_file(args.script)
+        else:
+            lines = writer.write(args.narrate, target_sec=args.narrate_sec)
+        script_text = ScriptWriter.to_text(lines)
+        print(f"\n  旁白脚本 {len(lines)} 句，预计 {ScriptWriter.total_duration(lines)}s")
+        for ln in lines:
+            print(f"    · {ln.text}")
+
+        if TtsEngine.available():
+            try:
+                tts = TtsEngine(voice=args.voice)
+                narration_path = "output/narration.mp3"
+                tts.synthesize(script_text, narration_path)
+                narration_audio = narration_path
+                print(f"  旁白音频: {narration_path}（音色: {tts.voice}）")
+            except Exception as e:
+                print(f"  配音合成失败（跳过配音）: {e}")
+        else:
+            print("  未安装 edge-tts，跳过配音（pip install edge-tts）")
+
     # 运行 pipeline
     pipeline = MontagePipeline()
     color_preset = getattr(args, '_color_preset', None)
@@ -1400,6 +1454,8 @@ def main():
         enable_ducking=enable_ducking,
         enable_reframe=enable_reframe,
         enable_sfx=args.sfx,
+        narration_audio=narration_audio,
+        narration_duck=not args.no_duck,
     )
 
     # 后处理：视频增强（只处理 pipeline.run() 未处理的项目）
