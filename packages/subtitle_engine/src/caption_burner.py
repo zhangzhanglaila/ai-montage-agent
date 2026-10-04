@@ -303,11 +303,16 @@ class CaptionBurner:
             return [self._build_drawtext_filter(segment, config)]
 
         fs = config.fontsize
-        space_w = fs * 0.35  # 词间距（估算，我们自己控制，保证对齐一致）
 
         # 逐词绘制：灰底词与黄色高亮词共用同一套坐标，彻底避免错位
         texts = [str(w.get("word", "")).strip() for w in words]
         widths = [estimate_text_width(t, fs) for t in texts]
+
+        # 词间距：所有词都是单个全角字（中文逐字）时不插额外间距，
+        # 否则中文会被撑开；拉丁词之间保留一个空格宽度。
+        all_single_wide = all(len(t) == 1 and _is_wide_char(t) for t in texts)
+        space_w = 0.0 if all_single_wide else fs * 0.35
+
         line_w = sum(widths) + space_w * max(0, len(words) - 1)
         center = f"(w-{line_w:.0f})/2"
 
@@ -347,15 +352,44 @@ class CaptionBurner:
             cum += widths[i] + space_w
         return filters
 
-    def _build_filter_chain(self, segments: List[CaptionSegment]) -> str:
+    def _build_filter_chain(self, segments: List[CaptionSegment], config: Optional[StyleConfig] = None) -> str:
+        config = config or self.config
         filters = []
         if self.style == CaptionStyle.KARAOKE:
             for seg in segments:
-                filters.extend(self._build_karaoke_filters(seg, self.config))
+                filters.extend(self._build_karaoke_filters(seg, config))
         else:
             for seg in segments:
-                filters.append(self._build_drawtext_filter(seg, self.config))
+                filters.append(self._build_drawtext_filter(seg, config))
         return ",".join(filters)
+
+    @staticmethod
+    def _probe_width(video_path: str) -> int:
+        """获取视频宽度（失败返回 0）"""
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width", "-of", "csv=p=0", video_path],
+            capture_output=True, text=True,
+        )
+        try:
+            return int(r.stdout.strip().split(",")[0])
+        except (ValueError, IndexError):
+            return 0
+
+    def _fit_config(self, segments: List[CaptionSegment], video_width: int) -> StyleConfig:
+        """按视频宽度自动缩小字号，避免长字幕溢出画面。"""
+        config = copy.deepcopy(self.config)
+        if video_width <= 0:
+            return config
+        max_text = max((s.text for s in segments), key=len, default="")
+        est = estimate_text_width(max_text, config.fontsize)
+        limit = video_width * 0.9
+        if est > limit and est > 0:
+            scale = limit / est
+            old = config.fontsize
+            config.fontsize = max(16, int(old * scale))
+            print(f"  字幕过长，字号 {old} -> {config.fontsize} 以避免溢出")
+        return config
 
     def burn(
         self, video_path: str, caption_path: str,
@@ -374,7 +408,8 @@ class CaptionBurner:
         if not segments:
             raise ValueError("没有字幕段")
 
-        filter_chain = self._build_filter_chain(segments)
+        config = self._fit_config(segments, self._probe_width(video_path))
+        filter_chain = self._build_filter_chain(segments, config)
         cmd = [
             "ffmpeg", "-y", "-i", str(video),
             "-vf", filter_chain,
