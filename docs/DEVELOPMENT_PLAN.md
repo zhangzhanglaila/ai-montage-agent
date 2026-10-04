@@ -293,11 +293,31 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 ### Phase 2 — v0.6
 | ID | 功能 | 状态 | commit | 完成日期 |
 |----|------|------|--------|----------|
-| F2.1 | 语义镜头检索 | ☑ | `PENDING` | 2026-10-04 |
-| F2.2 | 人脸/主体追踪 | ☐ | | |
+| F2.1 | 语义镜头检索 | ☑ | `9ecb480` | 2026-10-04 |
+| F2.2 | 人脸/主体追踪 | ☑ | `PENDING` | 2026-10-04 |
 | F2.3 | 变速曲线 | ☐ | | |
 | F2.4 | 多轨音频混音 | ☐ | | |
 | F2.5 | 实时预览 | ☐ | | |
+
+#### F2.2 实现记录
+- **发现真 bug**：原 `auto_reframe` 的动态裁切表达式写成
+  `if(between(t,a,b),x,x)` 再相加，数学上**恒等于 x**，从未真正跟随主体；
+  且强依赖 `cv2`（本机未装）→ 直接 ImportError。
+- 新增 `packages/video_understanding/src/subject_tracker.py`：**纯 numpy/Pillow**
+  的 显著性（局部对比度 + 饱和度） + 帧差运动 → x/y 能量投影 → 滑动窗口定位 →
+  EMA + 移动平均平滑。`cv2` 仅作可选人脸增强，缺失时静默跳过。
+- **关键算法细节**：当主体明显小于裁切窗口时，窗口和会出现**平台**，
+  朴素 `argmax` 会固定在平台最左端导致窗口不动。改为「平台内挑中心最贴近
+  能量质心」——既修好小主体，又保留多主体时选最密集窗口的鲁棒性。
+- 重写 `auto_reframe`：生成**分段线性 `x(t)` 表达式**交给 ffmpeg `crop`
+  时间表达式，一次编码得到连续平滑跟随；失败回退静态居中。
+  `target_aspect` 现支持任意比例；CLI 新增 `--reframe-aspect "3:4"` 与
+  `--reframe-method subject|center`。
+- 冒烟 `scripts/smoke_track.py`：合成「白方块匀速左→右」视频做**相关性断言**
+  （实测 corr=0.971），并断言裁切窗口像素序列单调右移、跟随裁切后画面中心亮度
+  由 0 → 207（证明主体确实进了画面中心），另有真实素材端到端。
+- 踩坑：`drawbox` 的时间表达式在本机 ffmpeg 上不渲染（画面全黑），
+  改用 `overlay x='(W-w)*t/T'`，脚本内加自检防止再犯。
 
 #### F2.1 实现记录
 - 新增 `packages/shot_index`（`embedder` / `index_store` / `retriever`）。

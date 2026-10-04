@@ -37,6 +37,24 @@ def _safe_float(value, default: float) -> float:
     return v if math.isfinite(v) else default
 
 
+def _parse_ratio(value, default: float = 9 / 16) -> float:
+    """解析比例字符串（"9:16" / "0.5625"）为宽高比 float。"""
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else default
+    s = str(value or "").strip()
+    if not s:
+        return default
+    try:
+        if ":" in s:
+            a, b = s.split(":", 1)
+            fa, fb = float(a), float(b)
+            return fa / fb if fb else default
+        v = float(s)
+        return v if v > 0 else default
+    except (ValueError, ZeroDivisionError):
+        return default
+
+
 class ShotDetector:
     """镜头检测 - 使用 FFmpeg scene detect"""
 
@@ -1036,6 +1054,7 @@ class MontagePipeline:
         color_preset: str = None,
         enable_reframe: bool = False,
         reframe_aspect: float = 9 / 16,
+        reframe_method: str = "subject",
         enable_ducking: bool = False,
         duck_level_db: float = -12.0,
         enable_harmonize: bool = False,
@@ -1207,7 +1226,8 @@ class MontagePipeline:
             try:
                 from packages.video_enhancement.src.auto_reframe import auto_reframe
                 reframed_path = output_path.replace(".mp4", "_9x16.mp4")
-                auto_reframe(result, reframed_path, target_aspect=reframe_aspect)
+                auto_reframe(result, reframed_path, target_aspect=reframe_aspect,
+                             method=reframe_method)
                 if Path(reframed_path).exists():
                     result = reframed_path
             except Exception as e:
@@ -1295,6 +1315,11 @@ def main():
                         help="字幕源语言（zh/en/ja...，默认自动检测）")
     parser.add_argument("--enhance", nargs="*", default=[],
                         help="视频增强选项: stabilize denoise color-grade auto-reframe")
+    parser.add_argument("--reframe-aspect", type=str, default="9:16",
+                        help="auto-reframe 目标比例，如 9:16 / 3:4 / 1:1（默认 9:16）")
+    parser.add_argument("--reframe-method", type=str, default="subject",
+                        choices=["subject", "center"],
+                        help="auto-reframe 裁切方式：subject 主体跟随（默认）/ center 静态居中")
     parser.add_argument("--export-timeline", type=str,
                         choices=["edl", "csv", "json", "xml", "otio"],
                         help="导出时间轴格式")
@@ -1512,6 +1537,8 @@ def main():
     enable_harmonize = getattr(args, '_enable_harmonize', False)
     enable_ducking = getattr(args, '_enable_ducking', False)
     enable_reframe = getattr(args, '_enable_reframe', False)
+    reframe_aspect = _parse_ratio(getattr(args, "reframe_aspect", "9:16"))
+    reframe_method = getattr(args, "reframe_method", "subject")
 
     result_path = pipeline.run(
         video_paths, bgm_path, args.style, args.output,
@@ -1520,6 +1547,8 @@ def main():
         enable_harmonize=enable_harmonize,
         enable_ducking=enable_ducking,
         enable_reframe=enable_reframe,
+        reframe_aspect=reframe_aspect,
+        reframe_method=reframe_method,
         enable_sfx=args.sfx,
         narration_audio=narration_audio,
         narration_duck=not args.no_duck,
