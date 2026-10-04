@@ -1323,6 +1323,17 @@ def main():
                         choices=["bold", "minimal", "cinematic"],
                         help="封面文字版式，默认 bold")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
+    parser.add_argument("--index-shots", type=str, nargs="?", const="cache/index/shot_index.json",
+                        default=None, metavar="PATH",
+                        help="为 --movies 建立语义镜头索引并保存（默认 cache/index/shot_index.json）")
+    parser.add_argument("--query-shots", type=str, default=None,
+                        help="语义检索镜头，如 '明亮的画面'（需先建索引；配合 --index-shots 指定索引路径）")
+    parser.add_argument("--index-top-k", type=int, default=10, help="检索返回条数（默认 10）")
+    parser.add_argument("--index-export", type=str, default=None,
+                        help="把检索命中的镜头切片导出到指定目录")
+    parser.add_argument("--embedder", type=str, default="auto",
+                        choices=["auto", "clip", "heuristic"],
+                        help="镜头编码器：auto(优先CLIP)/clip/heuristic(离线)")
 
     args = parser.parse_args()
 
@@ -1350,6 +1361,43 @@ def main():
         from packages.webui import start_webui
         print("启动 WebUI: http://localhost:8000")
         start_webui()
+        return
+
+    # 镜头索引构建模式
+    if args.index_shots:
+        if not args.movies:
+            parser.error("--index-shots 需要配合 --movies 指定素材")
+        from packages.shot_index import get_embedder, ShotIndex
+        for movie in args.movies:
+            if not Path(movie).exists():
+                print(f"错误: 视频文件不存在: {movie}")
+                return
+        emb = get_embedder(prefer=args.embedder)
+        print(f"镜头编码器: {emb.name} (dim={emb.dim})")
+        index = ShotIndex(embedder=emb)
+        for movie in args.movies:
+            print(f"\n索引: {movie}")
+            index.build(movie)
+        index.save(args.index_shots)
+        print(f"\n索引完成：{len(index)} 个镜头 -> {args.index_shots}")
+        return
+
+    # 镜头语义检索模式
+    if args.query_shots:
+        from packages.shot_index import get_embedder, ShotIndex, ShotRetriever, format_hits
+        index_path = args.index_shots or "cache/index/shot_index.json"
+        if not Path(index_path).exists():
+            print(f"索引不存在: {index_path}\n请先用 --movies xxx --index-shots {index_path} 建索引")
+            return
+        emb = get_embedder(prefer=args.embedder)
+        index = ShotIndex.load(index_path, embedder=emb)
+        retriever = ShotRetriever(index)
+        print(f"\n索引: {index_path}（{len(index)} 镜头，编码器 {index.name}）")
+        print(f"查询: 「{args.query_shots}」")
+        hits = retriever.search(query=args.query_shots, top_k=args.index_top_k)
+        print(format_hits(hits, show_frame=True))
+        if args.index_export and hits:
+            retriever.export_clips(hits, args.index_export)
         return
 
     # 校验参数：--movies 和 --query 二选一

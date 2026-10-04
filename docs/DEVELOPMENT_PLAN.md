@@ -293,11 +293,30 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 ### Phase 2 — v0.6
 | ID | 功能 | 状态 | commit | 完成日期 |
 |----|------|------|--------|----------|
-| F2.1 | 语义镜头检索 | ☐ | | |
+| F2.1 | 语义镜头检索 | ☑ | `PENDING` | 2026-10-04 |
 | F2.2 | 人脸/主体追踪 | ☐ | | |
 | F2.3 | 变速曲线 | ☐ | | |
 | F2.4 | 多轨音频混音 | ☐ | | |
 | F2.5 | 实时预览 | ☐ | | |
+
+#### F2.1 实现记录
+- 新增 `packages/shot_index`（`embedder` / `index_store` / `retriever`）。
+- **双后端可插拔**：`ClipEmbedder`（transformers CLIP，真跨模态，支持
+  「a smiling face」这类自由文本）；`HeuristicEmbedder`（纯 numpy/Pillow：
+  亮度/对比度/饱和度/色温/边缘密度 + 24 维 RGB 直方图 = 30 维，文本侧靠中英
+  关键词表映射到同一空间）。`get_embedder("auto")` 优先 CLIP，不可用则**静默降级**。
+- **防卡死**：CLIP 无本地缓存且未设 `MONTAGE_CLIP_ALLOW_DOWNLOAD=1` 时**跳过加载**，
+  避免离线环境卡在 HF 连接超时（实测降级耗时 0.26s）；`library_available` 用
+  `find_spec` 而非 import，省掉 ~10s 重库导入。
+- **建索引效率**：不对镜头逐个切分视频（太慢），改为**一次**低帧率抽帧（2fps）
+  再给每个镜头挑时间最近帧；embedding 存 sidecar `.npy`，元数据存 JSON。
+- 切点检测走 ffmpeg `select='gt(scene,X)'`，**不依赖 scenedetect/opencv**
+  （本机两者均未安装）。
+- CLI：`--index-shots [PATH]` / `--query-shots "文本"` / `--index-top-k` /
+  `--index-export DIR` / `--embedder auto|clip|heuristic`。
+- 冒烟 `scripts/smoke_index.py`：不满足于「跑通」，做**行为断言**——「暗」的
+  top-1 代表帧平均亮度必须显著低于「亮」的 top-1（实测 28.4 vs 164.5，
+  目视确认为暗场走廊 vs 明亮日戏）。
 
 ### Phase 3 — v0.7 / v1.0
 | ID | 功能 | 状态 | commit | 完成日期 |
@@ -316,7 +335,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 |----|------|------|
 | `edge-tts` 网络可用性 | 需联网合成语音 | 提供本地 TTS 适配器接口作为降级 |
 | 音效版权 | 不能用来源不明的音效 | 仅内置 CC0 素材 |
-| CLIP 显存/耗时 | 大批量镜头 embedding 慢 | 分批 + 结果缓存到 `cache/index` |
+| CLIP 权重需联网下载 | 离线环境无法加载 CLIP | 已实现 `HeuristicEmbedder` 离线兜底 + 无缓存时跳过加载避免卡死 |
 | FFmpeg 版本差异 | `xfade`/`sidechaincompress` 行为不一 | 启动时探测 ffmpeg 版本并降级 |
 | 平台投稿 API 门槛 | 需开发者资质/审核 | 先做本地导出 + 手动上传引导，再放开 API |
 | 测试素材不足 | `test_assets/` 仅 5 段 | 补一段带人声的视频用于旁白/字幕冒烟 |
