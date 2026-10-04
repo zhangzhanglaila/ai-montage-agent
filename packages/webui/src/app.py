@@ -352,6 +352,113 @@ async def download_result(task_id: str):
     return FileResponse(task["output_path"], media_type="video/mp4", filename="montage.mp4")
 
 
+# --------------------------------------------------------------- 预览相关
+@app.get("/api/task/{task_id}/proxy")
+async def task_proxy(task_id: str, width: int = 480, crf: int = 32,
+                     max_duration: Optional[float] = None, refresh: int = 0):
+    """低码率代理视频（缓存）。用于前端秒开播放。"""
+    if task_id not in _tasks:
+        return {"error": "任务不存在"}
+    task = _tasks[task_id]
+    if task["status"] != "done" or not task["output_path"]:
+        return {"error": "任务未完成"}
+    try:
+        from .preview import get_proxy
+        info = get_proxy(task["output_path"], width=width, crf=crf,
+                         max_duration=max_duration, force=bool(refresh))
+        task.setdefault("proxy", {})["info"] = info
+        return {
+            "status": "ok",
+            "url": f"/api/task/{task_id}/proxy/video?width={width}&crf={crf}",
+            **info,
+        }
+    except Exception as e:
+        return {"error": f"代理生成失败: {e}"}
+
+
+@app.get("/api/task/{task_id}/proxy/video")
+async def task_proxy_video(task_id: str, width: int = 480, crf: int = 32,
+                           max_duration: Optional[float] = None):
+    """直接返回代理视频文件（未生成则现场生成）。"""
+    if task_id not in _tasks:
+        return {"error": "任务不存在"}
+    task = _tasks[task_id]
+    if task["status"] != "done" or not task["output_path"]:
+        return {"error": "任务未完成"}
+    try:
+        from .preview import get_proxy
+        info = get_proxy(task["output_path"], width=width, crf=crf,
+                         max_duration=max_duration)
+    except Exception as e:
+        return {"error": f"代理生成失败: {e}"}
+    return FileResponse(info["path"], media_type="video/mp4", filename="preview.mp4")
+
+
+@app.post("/api/task/{task_id}/preview")
+async def create_param_preview(
+    task_id: str,
+    start: float = Form(0.0),
+    duration: float = Form(6.0),
+    color_grade: str = Form("none"),
+    subtitle_style: str = Form("none"),
+    width: int = Form(480),
+    crf: int = Form(32),
+):
+    """按当前参数快速渲染一小段预览（默认前 6 秒），用于"边调参边看"。"""
+    if task_id not in _tasks:
+        return {"error": "任务不存在"}
+    task = _tasks[task_id]
+    if task["status"] != "done" or not task["output_path"]:
+        return {"error": "任务未完成"}
+    try:
+        from .preview import get_param_preview
+        # 若任务侧已生成过字幕文件，则预览也带上字幕
+        sub_path = None
+        if subtitle_style and subtitle_style != "none":
+            cand = Path(task["output_path"]).with_suffix(".srt")
+            if cand.exists():
+                sub_path = str(cand)
+        info = get_param_preview(
+            task["output_path"], start=start, duration=duration, width=width,
+            crf=crf, color_preset=None if color_grade in ("none", "") else color_grade,
+            subtitle_path=sub_path,
+        )
+        previews = task.setdefault("previews", [])
+        pid = f"p{len(previews) + 1}"
+        previews.append({"id": pid, **info, "params": {
+            "start": start, "duration": duration, "color_grade": color_grade,
+            "subtitle_style": subtitle_style}})
+        return {
+            "status": "ok", "preview_id": pid,
+            "url": f"/api/task/{task_id}/preview/{pid}",
+            **info,
+        }
+    except Exception as e:
+        return {"error": f"预览生成失败: {e}"}
+
+
+@app.get("/api/task/{task_id}/preview/{preview_id}")
+async def get_param_preview_file(task_id: str, preview_id: str):
+    """取回参数预览文件。"""
+    if task_id not in _tasks:
+        return {"error": "任务不存在"}
+    for p in _tasks[task_id].get("previews", []):
+        if p["id"] == preview_id and Path(p["path"]).exists():
+            return FileResponse(p["path"], media_type="video/mp4", filename="preview.mp4")
+    return {"error": "预览不存在"}
+
+
+@app.post("/api/preview/clear")
+async def clear_preview_cache():
+    """清空预览缓存。"""
+    try:
+        from .preview import clear_cache
+        n = clear_cache()
+        return {"status": "ok", "removed": n}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def start_webui(host: str = "0.0.0.0", port: int = 8000):
     """启动 WebUI"""
     import uvicorn

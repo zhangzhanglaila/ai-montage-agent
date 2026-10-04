@@ -297,7 +297,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 | F2.2 | 人脸/主体追踪 | ☑ | `906681c` | 2026-10-04 |
 | F2.3 | 变速曲线 | ☑ | `c9d2cf3` | 2026-10-04 |
 | F2.4 | 多轨音频混音 | ☑ | `PENDING` | 2026-10-04 |
-| F2.5 | 实时预览 | ☐ | | |
+| F2.5 | 实时预览 | ☑ | `PENDING` | 2026-10-04 |
 
 #### F2.3 实现记录
 - 新增 `packages/montage_engine/src/speed_curve.py`。
@@ -326,6 +326,29 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 - 冒烟用**频段能量**定量验证：人声窗识别为 (1.0,2.0)/(4.0,5.0) 完全正确、
   闪避落差 13.5dB、BGM 从 0dB 调到 -20dB 实测差 **20.0dB**（严格线性）、
   三轨（300/1200/2600Hz）齐全、时长 6.00s。
+
+#### F2.5 实现记录
+- 新增 `packages/webui/src/preview.py`：
+  - `get_proxy` 低码率代理（等比缩到 480，crf 32），前端秒开播放；
+  - `get_param_preview` **参数预览**：只渲染一小段（默认前 6 秒）+ 小尺寸 +
+    带调色，拖完参数约 1.5s 就能看到效果，不用整片重渲；
+  - 两者都按「源文件 路径+mtime+大小 + 参数」的内容指纹缓存到 `cache/preview/`，
+    命中缓存 build_ms = 0。
+- 参数预览是**分步复用**已实现的模块（缩片 → `apply_color_grade` → `burn_ass`
+  烧字幕），而不是在预览里另写一套滤镜 —— 片段小所以每步都便宜，
+  好处是预览效果与成片一致，不会出现"预览好看成片不对"。
+- 预览带字幕时会把字幕时间轴按 `start` 左移并裁窗（`_shift_subtitles`），
+  保证片段与字幕对齐。
+- WebUI 新端点：`GET /api/task/{id}/proxy`、`GET /api/task/{id}/proxy/video`、
+  `POST /api/task/{id}/preview`、`GET /api/task/{id}/preview/{pid}`、
+  `POST /api/preview/clear`；前端结果区改为 `<video>` 播代理并提供「参数预览」按钮。
+- 冒烟 `scripts/smoke_preview.py`：代理 282kbps（原片 1408kbps）、
+  参数预览 1.5s 出片（验收要求 ≤10s）、缓存命中 0ms，并用 FastAPI `TestClient`
+  把 4 个端点真实打了一遍；另启动过真实 uvicorn 服务验证页面与路由。
+
+**Phase 2 完成 → 已打 tag `v0.6`。** 新增 3 个能力包（shot_index / audio_mixer /
+webui.preview），扩写 2 个（video_understanding.subject_tracker / auto_reframe、
+montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
 
 #### F2.2 实现记录
 - **发现真 bug**：原 `auto_reframe` 的动态裁切表达式写成

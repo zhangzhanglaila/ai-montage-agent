@@ -876,7 +876,22 @@
         <!-- 结果 -->
         <div class="card result" id="result-section">
             <h2>混剪完成!</h2>
-            <p style="margin: 16px 0;"><a id="download-link" href="#">下载视频</a></p>
+            <video id="proxy-video" controls playsinline preload="metadata"
+                   style="width:100%; max-width:560px; border-radius:8px; background:#000; border:2px solid #000;"></video>
+            <p style="margin: 12px 0;"><a id="download-link" href="#">下载原片</a></p>
+            <div style="display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap; margin-top:6px;">
+                <button type="button" id="btn-preview"
+                        style="padding:9px 16px; background:#fff; border:2px solid #000; border-radius:6px; font-family:inherit; font-weight:700; cursor:pointer; font-size:0.88em;">
+                    参数预览（前 6 秒）
+                </button>
+                <span id="preview-status" style="font-size:0.85em; color:#666;"></span>
+            </div>
+            <div id="preview-box" style="display:none; margin-top:14px;">
+                <div style="font-size:0.85em; font-weight:700; color:#333; margin-bottom:6px;">参数预览</div>
+                <video id="preview-video" controls playsinline preload="metadata"
+                       style="width:100%; max-width:560px; border-radius:8px; background:#000; border:2px solid #000;"></video>
+                <p id="preview-meta" style="font-size:0.82em; color:#666; margin-top:6px;"></p>
+            </div>
         </div>
     </div>
 
@@ -1428,6 +1443,7 @@
                     document.getElementById("submit-btn").disabled = false;
                     document.getElementById("submit-btn").textContent = "开始混剪";
                     showToast("混剪完成! 🎉");
+                    loadProxyVideo(taskId);
                 } else if (data.status === "error") {
                     evtSource.close();
                     _currentEvtSource = null;
@@ -1453,6 +1469,56 @@
                 }
             };
         }
+
+        // ===== 预览：低码率代理 + 参数预览 =====
+        let _currentTaskId = null;
+
+        function loadProxyVideo(taskId) {
+            _currentTaskId = taskId;
+            const v = document.getElementById("proxy-video");
+            const st = document.getElementById("preview-status");
+            v.src = `/api/task/${taskId}/proxy/video?width=640&crf=30`;
+            v.load();
+            st.textContent = "";
+            document.getElementById("preview-box").style.display = "none";
+        }
+
+        async function requestParamPreview() {
+            if (!_currentTaskId) { showToast("请先完成一次混剪"); return; }
+            const st = document.getElementById("preview-status");
+            const btn = document.getElementById("btn-preview");
+            btn.disabled = true;
+            st.textContent = "正在渲染预览（低码率短片段）...";
+
+            const adv = getAdvancedSettings();
+            const fd = new FormData();
+            fd.append("start", "0");
+            fd.append("duration", "6");
+            fd.append("color_grade", adv.colorGrade || "none");
+            fd.append("subtitle_style", adv.enableSubtitles ? adv.subtitleStyle : "none");
+            fd.append("width", "480");
+            fd.append("crf", "32");
+
+            try {
+                const resp = await fetch(`/api/task/${_currentTaskId}/preview`, { method: "POST", body: fd });
+                const data = await resp.json();
+                if (data.error) { st.textContent = "预览失败: " + data.error; return; }
+                const box = document.getElementById("preview-box");
+                const pv = document.getElementById("preview-video");
+                pv.src = data.url + "?t=" + Date.now();
+                pv.load();
+                box.style.display = "block";
+                st.textContent = data.cached ? "已用缓存（0ms）" : `生成耗时 ${data.build_ms}ms`;
+                document.getElementById("preview-meta").textContent =
+                    `${data.width}x${data.height} · ${data.duration}s · ${data.kbps}kbps · 调色:${adv.colorGrade || "none"}`;
+            } catch (e) {
+                st.textContent = "预览请求失败: " + e;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        document.getElementById("btn-preview").addEventListener("click", requestParamPreview);
 
         // 初始化
         renderSourceTable();
