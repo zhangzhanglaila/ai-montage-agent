@@ -8,6 +8,7 @@ from .src.transcriber import (
     transcribe_whisper, transcribe_faster_whisper,
     segments_to_srt, segments_to_vtt,
 )
+from .src.burn_pipeline import transcribe_and_burn, WORD_LEVEL_STYLES
 
 __all__ = [
     "CaptionStyle", "CaptionSegment", "StyleConfig",
@@ -16,4 +17,5 @@ __all__ = [
     "Transcriber", "extract_audio",
     "transcribe_whisper", "transcribe_faster_whisper",
     "segments_to_srt", "segments_to_vtt",
+    "transcribe_and_burn", "WORD_LEVEL_STYLES",
 ]

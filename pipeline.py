@@ -1240,10 +1240,14 @@ def main():
     # 新增功能参数
     parser.add_argument("--prompt", type=str, help="自然语言描述，如 '做一个30秒的漫威高燃混剪'")
     parser.add_argument("--subtitles", type=str, default="none",
-                        choices=["none", "tiktok", "youtube", "minimal", "cinematic"],
-                        help="字幕风格（默认 none）")
+                        choices=["none", "tiktok", "youtube", "minimal", "karaoke",
+                                 "bold", "cinematic"],
+                        help="字幕风格（默认 none；karaoke 为逐字高亮，需 whisper）")
+    parser.add_argument("--subtitle-model", type=str, default="base",
+                        choices=["tiny", "base", "small", "medium", "large"],
+                        help="字幕 Whisper 模型规格（默认 base，越大越准越慢）")
     parser.add_argument("--enhance", nargs="*", default=[],
-                        help="视频增强选项: stabilize denoise color-grade")
+                        help="视频增强选项: stabilize denoise color-grade auto-reframe")
     parser.add_argument("--export-timeline", type=str,
                         choices=["edl", "csv", "json", "xml", "otio"],
                         help="导出时间轴格式")
@@ -1379,7 +1383,7 @@ def main():
 
     # 后处理：字幕压制
     if args.subtitles != "none":
-        _apply_subtitles(result_path, args.subtitles)
+        _apply_subtitles(result_path, args.subtitles, args.subtitle_model)
 
     # 导出时间轴
     if args.export_timeline:
@@ -1415,31 +1419,36 @@ def _apply_enhancement(video_path: str, enhance_options: list, color_preset: str
         shutil.move(temp_path, video_path)
         enhanced = True
 
+    if "auto-reframe" in enhance_options:
+        print("  应用自动竖屏裁切...")
+        from packages.video_enhancement import auto_reframe
+        auto_reframe(video_path, temp_path)
+        if Path(temp_path).exists():
+            import shutil
+            shutil.move(temp_path, video_path)
+            enhanced = True
+
     if enhanced:
         print("  增强完成!")
 
 
-def _apply_subtitles(video_path: str, style: str):
-    """对输出视频应用字幕"""
+def _apply_subtitles(video_path: str, style: str, model_size: str = "base"):
+    """对输出视频应用字幕（转录 + 压制）
+
+    karaoke 等词级风格由 transcribe_and_burn 自动改用 JSON 中间格式，
+    以保留逐字时间戳。
+    """
     try:
-        from packages.subtitle_engine import Transcriber, burn_captions
-        import tempfile
+        from packages.subtitle_engine import transcribe_and_burn
 
-        print(f"\n  生成字幕 (风格: {style})...")
+        print(f"\n  生成字幕 (风格: {style}, 模型: {model_size})...")
 
-        # 1. 用 Whisper 转录
-        transcriber = Transcriber(backend="whisper", model_size="base")
-        srt_path = video_path.replace(".mp4", ".srt")
-        transcriber.transcribe(video_path, output_path=srt_path, output_format="srt")
-        print(f"  字幕文件: {srt_path}")
+        out_path = video_path.replace(".mp4", "_subtitled.mp4")
+        transcribe_and_burn(video_path, style=style, output_path=out_path, model_size=model_size)
 
-        # 2. 烧录字幕
-        output_path = video_path.replace(".mp4", "_subtitled.mp4")
-        burn_captions(video_path, srt_path, style=style, output_path=output_path)
-
-        # 3. 替换原文件
+        # 替换原文件
         import shutil
-        shutil.move(output_path, video_path)
+        shutil.move(out_path, video_path)
         print(f"  字幕烧录完成!")
     except ImportError as e:
         print(f"  字幕功能需要安装 whisper: pip install openai-whisper")

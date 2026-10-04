@@ -184,17 +184,14 @@ def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query:
             task["progress"] = 93
             task["message"] = "正在生成字幕（语音识别中，可能较慢）..."
             try:
-                from packages.subtitle_engine.src.transcriber import Transcriber
-                from packages.subtitle_engine.src.caption_burner import burn_captions
-                transcriber = Transcriber()
+                from packages.subtitle_engine.src.burn_pipeline import transcribe_and_burn
                 lang = None if subtitle_lang == "auto" else subtitle_lang
-                srt_path = result.replace(".mp4", ".srt")
-                transcriber.transcribe(result, output_path=srt_path, language=lang)
-                if os.path.exists(srt_path):
-                    temp_path = result + ".subtitled.mp4"
-                    burn_captions(result, srt_path, temp_path, style=subtitle_style)
-                    if os.path.exists(temp_path):
-                        os.replace(temp_path, result)
+                temp_path = result + ".subtitled.mp4"
+                transcribe_and_burn(
+                    result, style=subtitle_style, output_path=temp_path, language=lang,
+                )
+                if os.path.exists(temp_path):
+                    os.replace(temp_path, result)
             except Exception as e:
                 print(f"[Subtitles] 跳过: {e}")
 
