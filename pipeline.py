@@ -803,9 +803,11 @@ class VideoRenderer:
         else:
             result_path = self._render_concat(segment_videos)
 
-        # 清理临时文件
+        # 清理临时文件（注意：单段 xfade 时 result_path 本身就是临时文件，不能删）
+        keep = str(result_path)
         for f in scaled_files + xfade_temps:
-            Path(f).unlink(missing_ok=True)
+            if str(f) != keep:
+                Path(f).unlink(missing_ok=True)
 
         return result_path
 
