@@ -258,7 +258,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 | F1.5 | 卡拉OK 字幕打通 | ☑ | `a026e54` | 2026-10-04 |
 | F1.1 | 音效卡点 | ☑ | `05f21bc` | 2026-10-04 |
 | F1.2 | AI 配音旁白 | ☑ | `d987228` | 2026-10-04 |
-| F1.3 | 封面生成 | ☐ | | |
+| F1.3 | 封面生成 | ☑ | `de41ea0` | 2026-10-04 |
 | F1.4 | 字幕翻译·双语 | ☐ | | |
 
 ### 额外修复（开发中发现的既有缺陷，独立提交）
@@ -276,6 +276,10 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 - **F1.2**：新增 `packages/voice_engine`（脚本→TTS→混音）；旁白闪避用
   `volume` 滤镜的 `enable` 时间窗实现，规避 `sidechaincompress` 挂起风险。
   `edge-tts` 已实测可用。
+- **F1.3**：新增 `packages/cover_engine`；`pick_best_frame` 用 ffmpeg 抽帧 + numpy
+  拉普拉斯方差（清晰度）/ 亮度区间打分挑帧（**不引入 cv2**）；`make_cover` 支持
+  5 种比例、标题像素级自动折行、渐变蒙版，复用 `subtitle_engine.find_font`
+  保证中文标题正常渲染。CLI `--cover/--cover-title/--cover-subtitle/--cover-size/--cover-style`。
 
 ### Phase 2 — v0.6
 | ID | 功能 | 状态 | commit | 完成日期 |
