@@ -255,11 +255,27 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 ### Phase 1 — v0.5
 | ID | 功能 | 状态 | commit | 完成日期 |
 |----|------|------|--------|----------|
-| F1.1 | 音效卡点 | ☐ | | |
-| F1.2 | AI 配音旁白 | ☐ | | |
+| F1.5 | 卡拉OK 字幕打通 | ☑ | `a026e54` | 2026-10-04 |
+| F1.1 | 音效卡点 | ☑ | `05f21bc` | 2026-10-04 |
+| F1.2 | AI 配音旁白 | ☑ | `d987228` | 2026-10-04 |
 | F1.3 | 封面生成 | ☐ | | |
 | F1.4 | 字幕翻译·双语 | ☐ | | |
-| F1.5 | 卡拉OK 字幕打通 | ☐ | | |
+
+### 额外修复（开发中发现的既有缺陷，独立提交）
+| 说明 | commit | 日期 |
+|------|--------|------|
+| 静音/异常 BGM 导致 loudnorm 归一化崩溃（tests 长期失败） | `a59fd08` | 2026-10-04 |
+| 单一 xfade 段时清理误删结果文件（tests 随机失败） | `6282c81` | 2026-10-04 |
+
+#### F1.5 / F1.1 / F1.2 实现记录
+- **F1.5**：新增 `packages/subtitle_engine/src/burn_pipeline.py::transcribe_and_burn`，
+  CLI 补齐 `karaoke`/`bold` 与 `--subtitle-model`，WebUI 改为共用该函数。
+  （原 WebUI 虽暴露 karaoke 但固定转 SRT，逐字高亮实际失效，已一并修复。）
+- **F1.1**：新增 `packages/sound_engine`；音效**程序化合成**（零版权风险、可离线），
+  `SfxEngine.plan` 按风格密度选点、`mix` 用 `adelay + amix(normalize=0)` 混音。
+- **F1.2**：新增 `packages/voice_engine`（脚本→TTS→混音）；旁白闪避用
+  `volume` 滤镜的 `enable` 时间窗实现，规避 `sidechaincompress` 挂起风险。
+  `edge-tts` 已实测可用。
 
 ### Phase 2 — v0.6
 | ID | 功能 | 状态 | commit | 完成日期 |
