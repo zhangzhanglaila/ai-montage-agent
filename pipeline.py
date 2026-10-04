@@ -1303,6 +1303,18 @@ def main():
                         help="TTS 音色（如 zh-CN-YunxiNeural，默认女声晓晓）")
     parser.add_argument("--no-duck", action="store_true",
                         help="旁白时段不自动压低 BGM")
+    parser.add_argument("--cover", action="store_true",
+                        help="自动生成封面图（挑最佳帧 + 叠加标题）")
+    parser.add_argument("--cover-title", type=str, default=None,
+                        help="封面主标题（默认取 --prompt 或输出文件名）")
+    parser.add_argument("--cover-subtitle", type=str, default="",
+                        help="封面副标题")
+    parser.add_argument("--cover-size", type=str, default="16:9",
+                        choices=["16:9", "9:16", "1:1", "4:3", "3:4"],
+                        help="封面比例，默认 16:9")
+    parser.add_argument("--cover-style", type=str, default="bold",
+                        choices=["bold", "minimal", "cinematic"],
+                        help="封面文字版式，默认 bold")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
 
     args = parser.parse_args()
@@ -1466,6 +1478,22 @@ def main():
     # 后处理：字幕压制
     if args.subtitles != "none":
         _apply_subtitles(result_path, args.subtitles, args.subtitle_model)
+
+    # 后处理：封面生成
+    if args.cover:
+        from packages.cover_engine import generate_cover
+
+        cover_title = args.cover_title or args.prompt or Path(args.output).stem
+        cover_out = str(Path(args.output).with_suffix("")) + f"_cover.png"
+        print("\n  生成封面...")
+        generate_cover(
+            result_path,
+            title=cover_title,
+            subtitle=args.cover_subtitle,
+            size=args.cover_size,
+            style=args.cover_style,
+            out_path=cover_out,
+        )
 
     # 导出时间轴
     if args.export_timeline:
