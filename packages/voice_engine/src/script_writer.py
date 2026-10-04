@@ -71,17 +71,20 @@ class ScriptWriter:
         return self.from_text(raw)
 
     def offline(self, topic: str, target_sec: int = 30) -> List[NarrationLine]:
-        """离线模板脚本（LLM 不可用时兜底）"""
+        """离线模板脚本（LLM 不可用时兜底）
+
+        每句都刻意写短：既贴合口语节奏，也便于逐字字幕排版。
+        """
         n = max(3, min(10, int(target_sec // 5)))
         templates = [
-            f"今天我们来聊一聊{topic}。",
-            f"关于{topic}，有几个细节特别值得注意。",
-            f"第一个重点，是{topic}最核心的部分。",
-            f"接下来这个画面，能说明{topic}的分量。",
-            f"越是到后面，{topic}的张力就越强。",
-            f"看到这里，相信你已经感受到了{topic}的魅力。",
-            f"这就是{topic}最打动人的地方。",
-            f"如果喜欢，记得点赞关注，我们下期再见。",
+            f"今天聊聊{topic}。",
+            "先看第一个细节。",
+            "这个画面张力十足。",
+            "节奏开始加快了。",
+            "注意这里的转折。",
+            "越到后面越精彩。",
+            "这就是它的魅力。",
+            "喜欢记得点赞关注。",
         ]
         lines = [NarrationLine(t, estimate_duration(t)) for t in templates[:n]]
         return lines
