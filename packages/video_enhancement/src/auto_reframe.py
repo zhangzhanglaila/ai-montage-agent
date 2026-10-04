@@ -76,6 +76,46 @@ def compute_crop_window(src_w: int, src_h: int, target_aspect: float) -> Tuple[i
     return max(2, crop_w), max(2, crop_h)
 
 
+# 目标比例 -> 规范输出尺寸（短边 1080 系，避免偶数对齐后的零头如 1080x1916）
+_CANONICAL_SIZE = {
+    9 / 16: (1080, 1920),
+    2 / 3: (1080, 1620),
+    3 / 4: (1080, 1440),
+    4 / 5: (1080, 1350),
+    1.0: (1080, 1080),
+    4 / 3: (1440, 1080),
+    16 / 9: (1920, 1080),
+    21 / 9: (2520, 1080),
+}
+
+
+def _output_size(
+    crop_w: int, crop_h: int, target_aspect: float, base: int = 1080,
+    output_width: Optional[int] = None, output_height: Optional[int] = None,
+) -> Tuple[int, int]:
+    """推导输出分辨率（**保持目标比例、不做非等比拉伸**）。
+
+    修复点：原实现把输出尺寸硬编码为 1080x1920，target_aspect=16/9 时裁出
+    16:9 窗口后又强行 scale 到 9:16，画面被横向压扁。
+
+    优先级：显式 output_width/height > 常见比例的规范尺寸 > 按裁切窗口等比推导。
+    """
+    if output_width and output_height:
+        w, h = int(output_width), int(output_height)
+    else:
+        w = h = 0
+        for asp, (cw, ch) in _CANONICAL_SIZE.items():
+            if abs(target_aspect - asp) / max(1e-6, asp) < 0.02:
+                w, h = cw, ch
+                break
+        if not w:
+            if crop_w <= crop_h:
+                w, h = int(base), int(round(base * crop_h / max(1, crop_w)))
+            else:
+                w, h = int(round(base * crop_w / max(1, crop_h))), int(base)
+    return max(2, w - w % 2), max(2, h - h % 2)
+
+
 # ----------------------------------------------------------- 表达式构建
 def build_crop_expression(
     times: Sequence[float], values: Sequence[float], max_keyframes: int = 60,
@@ -163,21 +203,22 @@ def auto_reframe(
     input_path: str,
     output_path: str,
     target_aspect: float = 9 / 16,
-    output_width: int = 1080,
-    output_height: int = 1920,
+    output_width: Optional[int] = None,
+    output_height: Optional[int] = None,
     method: str = "subject",
     sample_fps: float = 4.0,
     smooth_alpha: float = 0.35,
     motion_weight: float = 0.45,
     max_keyframes: int = 60,
 ) -> str:
-    """自动竖屏裁切。
+    """自动裁切到目标宽高比（默认 9/16 竖屏，主体轨迹跟随）。
 
     Args:
         input_path: 输入视频
         output_path: 输出视频
-        target_aspect: 裁切窗口宽高比（默认 9/16=竖屏）
-        output_width / output_height: 输出分辨率
+        target_aspect: 裁切窗口宽高比（默认 9/16=竖屏；可传 16/9、1/1、4/5 等）
+        output_width / output_height: 输出分辨率；**默认 None＝按目标比例自动推导**
+            （短边 1080，等比缩放不变形）。同时给出两者时才强制覆盖。
         method: ``subject`` 主体跟随（默认）/ ``center`` 静态居中
         sample_fps: 轨迹采样帧率
         smooth_alpha: 轨迹 EMA 平滑系数（越小越稳、越大越灵敏）
@@ -189,13 +230,15 @@ def auto_reframe(
     """
     info = get_video_info(input_path)
     src_w, src_h = info["width"], info["height"]
-    scale_filter = f"scale={output_width}:{output_height}:flags=lanczos"
+    src_aspect = (src_w / src_h) if src_h else target_aspect
 
-    # 已经是竖屏：直接缩放，不裁
-    if src_w <= src_h:
-        print(f"  自动裁切: 源已是竖屏，直接缩放 -> {output_path}")
+    # 源比例已与目标一致：无需裁切，直接等比缩放（更快，且不丢画面）
+    if abs(src_aspect - target_aspect) / max(1e-6, target_aspect) < 0.02:
+        out_w, out_h = _output_size(src_w, src_h, target_aspect, output_width=output_width, output_height=output_height)
+        print(f"  自动裁切: 源比例已匹配 {target_aspect:.3f}，直接缩放 -> {out_w}x{out_h}")
         subprocess.run(
-            ["ffmpeg", "-y", "-i", input_path, "-vf", scale_filter,
+            ["ffmpeg", "-y", "-i", input_path,
+             "-vf", f"scale={out_w}:{out_h}:flags=lanczos",
              "-c:v", "libx264", "-crf", "23", "-preset", "medium",
              "-c:a", "copy", output_path],
             capture_output=True,
@@ -203,7 +246,9 @@ def auto_reframe(
         return output_path
 
     crop_w, crop_h = compute_crop_window(src_w, src_h, target_aspect)
-    print(f"  自动裁切: {src_w}x{src_h} -> crop {crop_w}x{crop_h} -> {output_width}x{output_height}")
+    out_w, out_h = _output_size(crop_w, crop_h, target_aspect, output_width=output_width, output_height=output_height)
+    scale_filter = f"scale={out_w}:{out_h}:flags=lanczos"
+    print(f"  自动裁切: {src_w}x{src_h} -> crop {crop_w}x{crop_h} -> {out_w}x{out_h}")
 
     crop_filter = None
     if method == "subject":

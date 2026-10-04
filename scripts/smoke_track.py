@@ -132,6 +132,13 @@ def main() -> int:
     assert center.exists() and probe_size(center) == (1080, 1920)
     print(f"  center  -> {probe_size(center)}")
 
+    # 回归：目标比例设为 16:9 时，绝不能仍被拉伸成竖屏（曾硬编码 1080x1920）
+    wide = OUT_DIR / "track_wide.mp4"
+    auto_reframe(str(src), str(wide), target_aspect=16 / 9, method="center")
+    assert wide.exists() and probe_size(wide) == (1920, 1080), \
+        f"16:9 目标被拉伸成了 {probe_size(wide)}"
+    print(f"  16:9    -> {probe_size(wide)}")
+
     # 跟随裁切的画面中心应逐渐变亮（方块进入画面中心）
     def center_brightness(video: Path, tt: float) -> float:
         png = OUT_DIR / f"_cb_{tt}.png"

@@ -55,6 +55,35 @@ def _parse_ratio(value, default: float = 9 / 16) -> float:
         return default
 
 
+# 常见目标比例 -> 文件名后缀（直接用浮点数拼名可读性差，这里给可读标签）
+_ASPECT_SUFFIX = {
+    16 / 9: "16x9",
+    9 / 16: "9x16",
+    1.0: "1x1",
+    4 / 3: "4x3",
+    3 / 4: "3x4",
+    4 / 5: "4x5",
+    21 / 9: "21x9",
+    2.35: "235x100",
+}
+
+
+def _ratio_suffix(aspect: float, default_aspect: float = 9 / 16) -> str:
+    """把宽高比 float 转成文件名后缀，如 9:16 -> "_9x16"。"""
+    try:
+        aspect = float(aspect)
+    except (TypeError, ValueError):
+        aspect = default_aspect
+    if not math.isfinite(aspect) or aspect <= 0:
+        aspect = default_aspect
+    for ratio, label in _ASPECT_SUFFIX.items():
+        if abs(aspect - ratio) < 1e-3:
+            return f"_{label}"
+    # 非常见比例：退化为可读的十进制（小数点转 p，避免文件名带点）
+    txt = f"{aspect:.4f}".rstrip("0").rstrip(".").replace(".", "p")
+    return f"_{txt}"
+
+
 def _probe_media_duration(path: str) -> float:
     """获取媒体时长（秒），失败返回 0。"""
     r = subprocess.run(
@@ -1233,12 +1262,13 @@ class MontagePipeline:
             except Exception as e:
                 print(f"  颜色分级失败（跳过）: {e}")
 
-        # 后处理：自动竖屏裁切
+        # 后处理：自动裁切（默认竖屏，目标比例可配）
         if enable_reframe:
-            print(f"\n  自动竖屏裁切...")
+            _suffix = _ratio_suffix(reframe_aspect)
+            print(f"\n  自动裁切 (目标比例 {_suffix.lstrip('_').replace('x', ':')})...")
             try:
                 from packages.video_enhancement.src.auto_reframe import auto_reframe
-                reframed_path = output_path.replace(".mp4", "_9x16.mp4")
+                reframed_path = output_path.replace(".mp4", f"{_suffix}.mp4")
                 auto_reframe(result, reframed_path, target_aspect=reframe_aspect,
                              method=reframe_method)
                 if Path(reframed_path).exists():
