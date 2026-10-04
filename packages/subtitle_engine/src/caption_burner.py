@@ -5,7 +5,9 @@
 支持 SRT/VTT/Whisper JSON 格式
 """
 
+import copy
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -97,6 +99,89 @@ STYLE_CONFIGS: Dict[CaptionStyle, StyleConfig] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 字体解析
+# ---------------------------------------------------------------------------
+# 各平台常见中文字体候选（按优先级）。
+# 不指定字体时 ffmpeg 的默认字体不含中文字形，中文会渲染成「豆腐块」，
+# 因此这里自动挑一个可用的中文字体文件。
+_CJK_FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\msyh.ttc",            # 微软雅黑
+    r"C:\Windows\Fonts\msyhbd.ttc",
+    r"C:\Windows\Fonts\simhei.ttf",          # 黑体
+    r"C:\Windows\Fonts\simsun.ttc",          # 宋体
+    r"C:\Windows\Fonts\Deng.ttf",            # 等线
+    "/System/Library/Fonts/PingFang.ttc",    # macOS 苹方
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+]
+
+_FFMPEG_MONO_FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\consola.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+]
+
+_font_cache: Dict[str, Optional[str]] = {}
+
+
+def find_font(kind: str = "cjk") -> Optional[str]:
+    """查找可用的字体文件。
+
+    Args:
+        kind: "cjk" 中文字体，"mono" 等宽字体
+
+    Returns:
+        字体文件路径；找不到返回 None（此时按 ffmpeg 默认字体处理）
+    """
+    if kind in _font_cache:
+        return _font_cache[kind]
+
+    env_key = "MONTAGE_FONT" if kind == "cjk" else "MONTAGE_FONT_MONO"
+    candidates = []
+    if os.environ.get(env_key):
+        candidates.append(os.environ[env_key])
+    candidates += _CJK_FONT_CANDIDATES if kind == "cjk" else _FFMPEG_MONO_FONT_CANDIDATES
+
+    found = None
+    for p in candidates:
+        if p and Path(p).exists():
+            found = p
+            break
+    if found is None and kind == "cjk":
+        print("  [警告] 未找到中文字体，字幕中文可能显示为方块；"
+              "可通过环境变量 MONTAGE_FONT 指定字体文件")
+    _font_cache[kind] = found
+    return found
+
+
+def escape_font_path(path: str) -> str:
+    """转义并引用 ffmpeg 滤镜中的字体路径。
+
+    必须用单引号包裹，否则 ffmpeg 滤镜解析器会把盘符的 ``:`` 当作选项分隔符
+    （Windows 下 ``fontfile=C:/...`` 会直接报 filter 解析失败）。
+    """
+    p = str(path).replace("\\", "/").replace(":", "\\:")
+    return f"'{p}'"
+
+
+def _is_wide_char(ch: str) -> bool:
+    """是否为全角字符（CJK / 全角标点），用于估算文本宽度"""
+    return ord(ch) > 0x2E80
+
+
+def estimate_text_width(text: str, fontsize: int) -> float:
+    """粗略估算文本像素宽度。
+
+    drawtext 无法在构建滤镜时测量真实字宽，这里按经验值估算：
+    CJK/全角字符 ≈ 1 em，其余（ASCII 字母、数字、半角空格）≈ 0.5 em。
+    只要基础行与高亮词使用同一套估算，二者的相对位置就一致。
+    """
+    return sum(fontsize * (1.0 if _is_wide_char(c) else 0.5) for c in text)
+
+
 def parse_srt(srt_path: Path) -> List[CaptionSegment]:
     segments = []
     content = srt_path.read_text(encoding="utf-8")
@@ -174,7 +259,17 @@ def escape_ffmpeg_text(text: str) -> str:
 class CaptionBurner:
     def __init__(self, style: CaptionStyle = CaptionStyle.YOUTUBE, custom_config: Optional[StyleConfig] = None):
         self.style = style
-        self.config = custom_config or STYLE_CONFIGS[style]
+        # 复制一份，避免修改模块级 STYLE_CONFIGS 单例
+        self.config = copy.deepcopy(custom_config or STYLE_CONFIGS[style])
+        # 未指定字体时自动套用系统中文字体，否则中文会变成方块
+        if not self.config.fontfile:
+            self.config.fontfile = find_font("cjk")
+
+    def _font_part(self, config: StyleConfig) -> List[str]:
+        """drawtext 的 fontfile 参数（含路径转义）"""
+        if not config.fontfile:
+            return []
+        return [f"fontfile={escape_font_path(config.fontfile)}"]
 
     def _build_drawtext_filter(self, segment: CaptionSegment, config: StyleConfig) -> str:
         text = escape_ffmpeg_text(segment.text)
@@ -188,8 +283,7 @@ class CaptionBurner:
             f"y={config.y_expr}",
             f"enable='between(t,{segment.start:.3f},{segment.end:.3f})'",
         ]
-        if config.fontfile:
-            parts.append(f"fontfile={config.fontfile}")
+        parts.extend(self._font_part(config))
         if config.shadowx or config.shadowy:
             parts.append(f"shadowcolor={config.shadowcolor}")
             parts.append(f"shadowx={config.shadowx}")
@@ -203,30 +297,54 @@ class CaptionBurner:
     def _build_karaoke_filters(self, segment: CaptionSegment, config: StyleConfig) -> List[str]:
         if not segment.words:
             return [self._build_drawtext_filter(segment, config)]
-        filters = []
-        base_text = escape_ffmpeg_text(segment.text)
-        base_parts = [
-            f"drawtext=text='{base_text}'",
-            f"fontsize={config.fontsize}", "fontcolor='gray'",
-            f"borderw={config.borderw}", f"bordercolor={config.bordercolor}",
-            f"x={config.x_expr}", f"y={config.y_expr}",
-            f"enable='between(t,{segment.start:.3f},{segment.end:.3f})'",
-        ]
-        filters.append(":".join(base_parts))
-        for word_data in segment.words:
-            word_text = escape_ffmpeg_text(word_data.get("word", "").strip())
-            if not word_text:
-                continue
+
+        words = [w for w in segment.words if str(w.get("word", "")).strip()]
+        if not words:
+            return [self._build_drawtext_filter(segment, config)]
+
+        fs = config.fontsize
+        space_w = fs * 0.35  # 词间距（估算，我们自己控制，保证对齐一致）
+
+        # 逐词绘制：灰底词与黄色高亮词共用同一套坐标，彻底避免错位
+        texts = [str(w.get("word", "")).strip() for w in words]
+        widths = [estimate_text_width(t, fs) for t in texts]
+        line_w = sum(widths) + space_w * max(0, len(words) - 1)
+        center = f"(w-{line_w:.0f})/2"
+
+        filters: List[str] = []
+        cum = 0.0
+        for i, word_data in enumerate(words):
+            x = f"{center}+{cum:.0f}"
+            common = [
+                f"fontsize={fs}",
+                f"borderw={config.borderw}",
+                f"bordercolor={config.bordercolor}",
+                f"x={x}",
+                f"y={config.y_expr}",
+            ]
+            common.extend(self._font_part(config))
+
+            # 基础词（整句时段内显示为灰色）
+            base_parts = [
+                f"drawtext=text='{escape_ffmpeg_text(texts[i])}'",
+                "fontcolor='gray'",
+                *common,
+                f"enable='between(t,{segment.start:.3f},{segment.end:.3f})'",
+            ]
+            filters.append(":".join(base_parts))
+
+            # 高亮词（该词自己的时间段内覆盖为高亮色）
             word_start = word_data.get("start", segment.start)
             word_end = word_data.get("end", segment.end)
-            word_parts = [
-                f"drawtext=text='{word_text}'",
-                f"fontsize={config.fontsize}", f"fontcolor={config.fontcolor}",
-                f"borderw={config.borderw}", f"bordercolor={config.bordercolor}",
-                f"x={config.x_expr}", f"y={config.y_expr}",
+            hi_parts = [
+                f"drawtext=text='{escape_ffmpeg_text(texts[i])}'",
+                f"fontcolor={config.fontcolor}",
+                *common,
                 f"enable='between(t,{word_start:.3f},{word_end:.3f})'",
             ]
-            filters.append(":".join(word_parts))
+            filters.append(":".join(hi_parts))
+
+            cum += widths[i] + space_w
         return filters
 
     def _build_filter_chain(self, segments: List[CaptionSegment]) -> str:
