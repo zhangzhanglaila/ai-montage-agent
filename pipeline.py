@@ -1041,6 +1041,7 @@ class MontagePipeline:
         enable_harmonize: bool = False,
         harmonize_strength: float = 0.5,
         transition_pattern: dict = None,
+        enable_sfx: bool = False,
     ) -> str:
         """
         运行完整混剪流程
@@ -1058,6 +1059,8 @@ class MontagePipeline:
             duck_level_db: 闪避降低分贝数 (默认 -12dB)
             enable_harmonize: 是否启用色彩协调
             harmonize_strength: 色彩协调强度 (0.0~1.0)
+            transition_pattern: 转场模板
+            enable_sfx: 是否启用音效卡点（按强拍/剪辑点叠加音效）
 
         Returns:
             输出文件路径
@@ -1206,6 +1209,24 @@ class MontagePipeline:
             except Exception as e:
                 print(f"  竖屏裁切失败（跳过）: {e}")
 
+        # 后处理：音效卡点
+        if enable_sfx:
+            print("\n  音效卡点...")
+            try:
+                from packages.sound_engine import SfxEngine
+                sfx_engine = SfxEngine()
+                cues = sfx_engine.plan(beat_analysis.beats, style=style)
+                if cues:
+                    sfx_path = output_path.replace(".mp4", "_sfx.mp4")
+                    sfx_engine.mix(result, cues, sfx_path)
+                    if Path(sfx_path).exists():
+                        result = sfx_path
+                    print(f"  已叠加 {len(cues)} 个音效")
+                else:
+                    print("  未规划出音效点（跳过）")
+            except Exception as e:
+                print(f"  音效卡点失败（跳过）: {e}")
+
         print("\n" + "=" * 50)
         print("混剪完成!")
         print(f"输出文件: {result}")
@@ -1253,6 +1274,8 @@ def main():
     parser.add_argument("--export-timeline", type=str,
                         choices=["edl", "csv", "json", "xml", "otio"],
                         help="导出时间轴格式")
+    parser.add_argument("--sfx", action="store_true",
+                        help="按节拍自动叠加音效（强拍 impact / 剪辑点 whoosh）")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
 
     args = parser.parse_args()
@@ -1376,6 +1399,7 @@ def main():
         enable_harmonize=enable_harmonize,
         enable_ducking=enable_ducking,
         enable_reframe=enable_reframe,
+        enable_sfx=args.sfx,
     )
 
     # 后处理：视频增强（只处理 pipeline.run() 未处理的项目）
