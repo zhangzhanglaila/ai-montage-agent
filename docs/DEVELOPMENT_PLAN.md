@@ -259,7 +259,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 | F1.1 | 音效卡点 | ☑ | `05f21bc` | 2026-10-04 |
 | F1.2 | AI 配音旁白 | ☑ | `d987228` | 2026-10-04 |
 | F1.3 | 封面生成 | ☑ | `de41ea0` | 2026-10-04 |
-| F1.4 | 字幕翻译·双语 | ☐ | | |
+| F1.4 | 字幕翻译·双语 | ☑ | `PENDING` | 2026-10-04 |
 
 ### 额外修复（开发中发现的既有缺陷，独立提交）
 | 说明 | commit | 日期 |
@@ -280,6 +280,11 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
   拉普拉斯方差（清晰度）/ 亮度区间打分挑帧（**不引入 cv2**）；`make_cover` 支持
   5 种比例、标题像素级自动折行、渐变蒙版，复用 `subtitle_engine.find_font`
   保证中文标题正常渲染。CLI `--cover/--cover-title/--cover-subtitle/--cover-size/--cover-style`。
+- **F1.4**：新增 `packages/subtitle_engine/src/translator.py`（LLM / deep-translator /
+  直通三级后端，**保证译文行数与原文一致**以避免串行）；`CaptionBurner` 新增
+  `BILINGUAL` 风格与 `build_bilingual_ass`（libass 双行：原文白字在上、译文黄字在下，
+  字号随分辨率缩放）、`burn_ass`、`burn_segments`。CLI `--translate/--translate-backend/--subtitle-lang`，
+  WebUI 字幕风格加「双语」并新增翻译目标语言下拉。
 
 ### Phase 2 — v0.6
 | ID | 功能 | 状态 | commit | 完成日期 |

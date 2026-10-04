@@ -47,6 +47,7 @@ playwright>=1.40.0           # 浏览器自动化（YARN/PlayPhrase/QuoDB/找台
 edge-tts>=7.0.0             # 旁白语音合成（免费、无需 API Key，需要联网）
 
 # ============ 可选依赖 ============
+# deep-translator>=1.11.0   # 字幕翻译的 Google 免费后端（--translate 无 LLM 时的兜底）
 # madmom>=0.16.1            # 更精确的节拍检测（需要编译）
 # celery[redis]>=5.3.0      # 异步任务队列
 # redis>=4.6.0              # Redis客户端

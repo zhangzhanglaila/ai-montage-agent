@@ -35,6 +35,7 @@ def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query:
                       color_preset: str = None, stabilize: bool = False,
                       aspect_ratio: str = "16/9", enable_subtitles: bool = False,
                       subtitle_style: str = "tiktok", subtitle_lang: str = "auto",
+                      translate_lang: str = "",
                       color_grade: str = "none", enable_ducking: bool = False,
                       enable_harmonize: bool = False, enhance_options: list = None,
                       transition_pattern_id: str = "auto"):
@@ -186,9 +187,13 @@ def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query:
             try:
                 from packages.subtitle_engine.src.burn_pipeline import transcribe_and_burn
                 lang = None if subtitle_lang == "auto" else subtitle_lang
+                translate = translate_lang or None
+                if translate:
+                    task["message"] = f"正在生成双语字幕（翻译->{translate}）..."
                 temp_path = result + ".subtitled.mp4"
                 transcribe_and_burn(
                     result, style=subtitle_style, output_path=temp_path, language=lang,
+                    translate=translate,
                 )
                 if os.path.exists(temp_path):
                     os.replace(temp_path, result)
@@ -265,6 +270,7 @@ async def create_montage(
     enable_subtitles: str = Form("false"),
     subtitle_style: str = Form("tiktok"),
     subtitle_lang: str = Form("auto"),
+    translate_lang: str = Form(""),
     color_grade: str = Form("none"),
     enable_ducking: str = Form("false"),
     enable_harmonize: str = Form("false"),
@@ -302,6 +308,7 @@ async def create_montage(
         _run_montage_task, task_id, video_paths_list, bgm_path, bgm_query,
         style, output_name, query, source, clip_limit, color_preset, stabilize,
         aspect_ratio, enable_subtitles == "true", subtitle_style, subtitle_lang,
+        translate_lang,
         color_grade, enable_ducking == "true", enable_harmonize == "true", _enhance,
         transition_pattern,
     )

@@ -1281,11 +1281,18 @@ def main():
     parser.add_argument("--prompt", type=str, help="自然语言描述，如 '做一个30秒的漫威高燃混剪'")
     parser.add_argument("--subtitles", type=str, default="none",
                         choices=["none", "tiktok", "youtube", "minimal", "karaoke",
-                                 "bold", "cinematic"],
+                                 "bold", "cinematic", "bilingual"],
                         help="字幕风格（默认 none；karaoke 为逐字高亮，需 whisper）")
     parser.add_argument("--subtitle-model", type=str, default="base",
                         choices=["tiny", "base", "small", "medium", "large"],
                         help="字幕 Whisper 模型规格（默认 base，越大越准越慢）")
+    parser.add_argument("--translate", type=str, default=None,
+                        help="字幕翻译目标语言（如 en/ja/ko）；给定时输出双语字幕")
+    parser.add_argument("--translate-backend", type=str, default="auto",
+                        choices=["auto", "llm", "deep"],
+                        help="翻译后端: auto(LLM优先)/llm/deep(需 deep-translator)")
+    parser.add_argument("--subtitle-lang", type=str, default=None,
+                        help="字幕源语言（zh/en/ja...，默认自动检测）")
     parser.add_argument("--enhance", nargs="*", default=[],
                         help="视频增强选项: stabilize denoise color-grade auto-reframe")
     parser.add_argument("--export-timeline", type=str,
@@ -1475,9 +1482,17 @@ def main():
     if post_enhance:
         _apply_enhancement(result_path, post_enhance, color_preset)
 
-    # 后处理：字幕压制
-    if args.subtitles != "none":
-        _apply_subtitles(result_path, args.subtitles, args.subtitle_model)
+    # 后处理：字幕压制（--translate 时输出双语字幕）
+    sub_style = args.subtitles
+    if args.translate and sub_style == "none":
+        sub_style = "bilingual"
+    if sub_style != "none":
+        _apply_subtitles(
+            result_path, sub_style, args.subtitle_model,
+            translate=args.translate,
+            source_lang=args.subtitle_lang or "auto",
+            translate_backend=args.translate_backend,
+        )
 
     # 后处理：封面生成
     if args.cover:
@@ -1542,19 +1557,28 @@ def _apply_enhancement(video_path: str, enhance_options: list, color_preset: str
         print("  增强完成!")
 
 
-def _apply_subtitles(video_path: str, style: str, model_size: str = "base"):
-    """对输出视频应用字幕（转录 + 压制）
+def _apply_subtitles(
+    video_path: str, style: str, model_size: str = "base",
+    translate: str = None, source_lang: str = "auto",
+    translate_backend: str = "auto",
+):
+    """对输出视频应用字幕（转录 + 可选翻译 + 压制）
 
     karaoke 等词级风格由 transcribe_and_burn 自动改用 JSON 中间格式，
-    以保留逐字时间戳。
+    以保留逐字时间戳；bilingual / --translate 走 ASS 双行排版。
     """
     try:
         from packages.subtitle_engine import transcribe_and_burn
 
-        print(f"\n  生成字幕 (风格: {style}, 模型: {model_size})...")
+        extra = f", 翻译->{translate}" if translate else ""
+        print(f"\n  生成字幕 (风格: {style}, 模型: {model_size}{extra})...")
 
         out_path = video_path.replace(".mp4", "_subtitled.mp4")
-        transcribe_and_burn(video_path, style=style, output_path=out_path, model_size=model_size)
+        transcribe_and_burn(
+            video_path, style=style, output_path=out_path, model_size=model_size,
+            translate=translate, source_lang=source_lang,
+            translate_backend=translate_backend,
+        )
 
         # 替换原文件
         import shutil

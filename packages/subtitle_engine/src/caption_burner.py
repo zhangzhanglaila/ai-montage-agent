@@ -23,6 +23,7 @@ class CaptionStyle(str, Enum):
     KARAOKE = "karaoke"
     BOLD = "bold"
     CINEMATIC = "cinematic"
+    BILINGUAL = "bilingual"
 
 
 @dataclass
@@ -31,6 +32,8 @@ class CaptionSegment:
     end: float
     text: str
     words: Optional[List[Dict[str, Any]]] = None
+    # 双语字幕的译文行（原文在 text，译文在 text2）
+    text2: Optional[str] = None
 
 
 @dataclass
@@ -95,6 +98,15 @@ STYLE_CONFIGS: Dict[CaptionStyle, StyleConfig] = {
         shadowx=0, shadowy=0,
         x_expr="(w-text_w)/2",
         y_expr="h*0.85",
+    ),
+    # 双语：原/译文上下两行，实际压制走 ASS（见 build_bilingual_ass），
+    # 这里的 fontsize 仅作为 ASS 版式的基准字号参考。
+    CaptionStyle.BILINGUAL: StyleConfig(
+        fontsize=48, fontcolor="white",
+        borderw=2, bordercolor="black",
+        shadowx=0, shadowy=0, box=False,
+        x_expr="(w-text_w)/2",
+        y_expr="h-100",
     ),
 }
 
@@ -256,6 +268,166 @@ def escape_ffmpeg_text(text: str) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# 双语字幕：ASS（libass）生成与压制
+# ---------------------------------------------------------------------------
+# 字体文件 -> 字体族名（ASS 用族名而非文件路径）
+_FONT_FAMILY_BY_FILE = {
+    "msyh.ttc": "Microsoft YaHei",
+    "msyhbd.ttc": "Microsoft YaHei",
+    "msyhl.ttc": "Microsoft YaHei",
+    "simhei.ttf": "SimHei",
+    "simsun.ttc": "SimSun",
+    "deng.ttf": "DengXian",
+    "pingfang.ttc": "PingFang SC",
+    "stheitimedium.ttc": "Heiti SC",
+    "notosanscjk-regular.ttc": "Noto Sans CJK SC",
+    "wqy-zenhei.ttc": "WenQuanYi Zen Hei",
+}
+
+
+def font_family_from_file(font_path: Optional[str]) -> str:
+    """由字体文件路径推断 ASS 字体族名；未知时回退 Microsoft YaHei。"""
+    if not font_path:
+        return "Microsoft YaHei"
+    name = Path(font_path).name.lower()
+    if name in _FONT_FAMILY_BY_FILE:
+        return _FONT_FAMILY_BY_FILE[name]
+    # 模糊匹配（覆盖如 msyhbd.ttc / NotoSansCJK-Regular.ttc 等变体）
+    for key, fam in _FONT_FAMILY_BY_FILE.items():
+        if key.split(".")[0] in name:
+            return fam
+    return "Microsoft YaHei"
+
+
+def _ass_time(seconds: float) -> str:
+    """秒 -> ASS 时间码 H:MM:SS.cc"""
+    if seconds < 0:
+        seconds = 0
+    cs = int(round(seconds * 100))
+    h, rem = divmod(cs, 360000)
+    m, rem = divmod(rem, 6000)
+    s, cs = divmod(rem, 100)
+    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _escape_ass_text(text: str) -> str:
+    """转义 ASS 文本：换行转 \\N，去掉花括号（避免被当作特效块）。"""
+    t = (text or "").replace("\r", "")
+    t = t.replace("{", "(").replace("}", ")")
+    t = re.sub(r"\n+", r"\\N", t)
+    return t.strip()
+
+
+def _ass_color(rgb: str) -> str:
+    """'RRGGBB' -> ASS &HAABBGGRR（不透明）。"""
+    rgb = rgb.lstrip("#")
+    r, g, b = int(rgb[0:2], 16), int(rgb[2:4], 16), int(rgb[4:6], 16)
+    return f"&H00{b:02X}{g:02X}{r:02X}"
+
+
+def build_bilingual_ass(
+    segments: List[CaptionSegment],
+    out_path: Optional[str] = None,
+    video_size: tuple = (1280, 720),
+    target_lang: str = "en",
+    font: Optional[str] = None,
+) -> str:
+    """把双语字幕段写成 ASS 文件（原文在上、译文在下）。
+
+    Args:
+        segments: CaptionSegment 列表；``text`` 为原文，``text2`` 为译文
+        out_path: 输出 .ass 路径，默认写到临时文件
+        video_size: (宽, 高)，用于排版与字号缩放
+        target_lang: 目标语言（仅用于注释）
+        font: 字体族名，默认由系统中文字体推断
+
+    Returns:
+        生成的 .ass 文件路径
+    """
+    w, h = video_size
+    w = w if w and w > 0 else 1280
+    h = h if h and h > 0 else 720
+    font = font or font_family_from_file(find_font("cjk"))
+
+    main_size = max(20, int(h * 0.075))
+    sub_size = max(16, int(h * 0.055))
+    sub_mv = max(20, int(h * 0.062))
+    main_mv = sub_mv + int(h * 0.092)
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {w}\n"
+        f"PlayResY: {h}\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "YCbCr Matrix: TV.601\n"
+        f"; bilingual subtitles (target={target_lang})\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Main,{font},{main_size},{_ass_color('FFFFFF')},{_ass_color('FFFFFF')},"
+        f"{_ass_color('000000')},&H80000000,-1,0,0,0,100,100,0,0,1,{max(2, int(h * 0.004))},1,2,40,40,{main_mv},1\n"
+        f"Style: Sub,{font},{sub_size},{_ass_color('FFE066')},{_ass_color('FFE066')},"
+        f"{_ass_color('000000')},&H80000000,0,0,0,0,100,100,0,0,1,{max(2, int(h * 0.003))},1,2,40,40,{sub_mv},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+    events: List[str] = []
+    for seg in segments:
+        src = _escape_ass_text(seg.text)
+        tr = _escape_ass_text(seg.text2 or "")
+        start, end = _ass_time(seg.start), _ass_time(seg.end)
+        if src:
+            events.append(f"Dialogue: 0,{start},{end},Main,,0,0,0,,{src}")
+        if tr:
+            events.append(f"Dialogue: 0,{start},{end},Sub,,0,0,0,,{tr}")
+
+    content = header + "\n".join(events) + "\n"
+
+    if out_path is None:
+        import tempfile
+        fd, out_path = tempfile.mkstemp(suffix=".ass", prefix="bilingual_")
+        os.close(fd)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(content, encoding="utf-8-sig")
+    return out_path
+
+
+def burn_ass(video_path: str, ass_path: str, output_path: Optional[str] = None) -> str:
+    """用 libass 把 ASS 字幕烧录进视频。"""
+    video = Path(video_path)
+    if not video.exists():
+        raise FileNotFoundError(f"视频不存在: {video_path}")
+    if not Path(ass_path).exists():
+        raise FileNotFoundError(f"字幕不存在: {ass_path}")
+    if output_path is None:
+        output_path = str(video.parent / f"{video.stem}_subtitled.mp4")
+
+    # ass 滤镜路径需转义 Windows 盘符冒号
+    ass_arg = escape_ffmpeg_path(str(ass_path))
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video),
+        "-vf", f"ass={ass_arg}",
+        "-c:v", "libx264", "-crf", "23", "-preset", "medium",
+        "-c:a", "copy", output_path,
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    return output_path
+
+
+def escape_ffmpeg_path(path: str) -> str:
+    """转义 ffmpeg 滤镜中引用的文件路径（单引号包裹 + 转义冒号/反斜杠）。"""
+    p = str(path).replace("\\", "/")
+    p = p.replace(":", "\\:")
+    p = p.replace("'", "\\'")
+    return f"'{p}'"
+
+
 class CaptionBurner:
     def __init__(self, style: CaptionStyle = CaptionStyle.YOUTUBE, custom_config: Optional[StyleConfig] = None):
         self.style = style
@@ -376,6 +548,20 @@ class CaptionBurner:
         except (ValueError, IndexError):
             return 0
 
+    @staticmethod
+    def _probe_size(video_path: str) -> tuple:
+        """获取视频 (宽, 高)，失败回退 (1280, 720)。"""
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", video_path],
+            capture_output=True, text=True,
+        )
+        try:
+            w, h = r.stdout.strip().split(",")[:2]
+            return int(w), int(h)
+        except (ValueError, IndexError):
+            return 1280, 720
+
     def _fit_config(self, segments: List[CaptionSegment], video_width: int) -> StyleConfig:
         """按视频宽度自动缩小字号，避免长字幕溢出画面。"""
         config = copy.deepcopy(self.config)
@@ -414,6 +600,42 @@ class CaptionBurner:
             "ffmpeg", "-y", "-i", str(video),
             "-vf", filter_chain,
             "-c:v", codec, "-crf", str(crf), "-preset", preset,
+            "-c:a", "copy", output_path,
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+        return output_path
+
+    def burn_segments(
+        self, segments: List[CaptionSegment], video_path: str,
+        output_path: Optional[str] = None,
+    ) -> str:
+        """直接压制已加载的字幕段。
+
+        双语（BILINGUAL）走 ASS 双行排版；其余风格走 drawtext 滤镜链。
+        便于调用方先转录/翻译再压制，避免中间文件往返。
+        """
+        video = Path(video_path)
+        if not video.exists():
+            raise FileNotFoundError(f"视频不存在: {video_path}")
+        if not segments:
+            raise ValueError("没有字幕段")
+        if output_path is None:
+            output_path = str(video.parent / f"{video.stem}_captioned.mp4")
+
+        if self.style == CaptionStyle.BILINGUAL:
+            size = self._probe_size(video_path)
+            ass_path = build_bilingual_ass(segments, video_size=size)
+            try:
+                return burn_ass(str(video), ass_path, output_path)
+            finally:
+                Path(ass_path).unlink(missing_ok=True)
+
+        config = self._fit_config(segments, self._probe_width(video_path))
+        filter_chain = self._build_filter_chain(segments, config)
+        cmd = [
+            "ffmpeg", "-y", "-i", str(video),
+            "-vf", filter_chain,
+            "-c:v", "libx264", "-crf", "23", "-preset", "medium",
             "-c:a", "copy", output_path,
         ]
         subprocess.run(cmd, capture_output=True, check=True)

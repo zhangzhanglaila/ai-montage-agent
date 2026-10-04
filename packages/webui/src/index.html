@@ -769,6 +769,7 @@
                                     <option value="karaoke">卡拉OK（逐字高亮）</option>
                                     <option value="bold">粗体（醒目白字）</option>
                                     <option value="cinematic">电影感（底部半透明）</option>
+                                    <option value="bilingual">双语（原文+译文）</option>
                                 </select>
                             </div>
                             <div style="flex:1;">
@@ -779,6 +780,16 @@
                                     <option value="en">英文</option>
                                     <option value="ja">日文</option>
                                     <option value="ko">韩文</option>
+                                </select>
+                            </div>
+                            <div style="flex:1;">
+                                <label style="font-size:0.82em; font-weight:700; color:#333; display:block; margin-bottom:4px;">翻译目标（双语时）</label>
+                                <select id="translate-lang" style="width:100%; padding:8px 10px; background:#fff; border:2px solid #000; border-radius:4px; font-size:0.88em; font-family:inherit;">
+                                    <option value="en">英文</option>
+                                    <option value="zh">中文</option>
+                                    <option value="ja">日文</option>
+                                    <option value="ko">韩文</option>
+                                    <option value="es">西班牙文</option>
                                 </select>
                             </div>
                         </div>
@@ -1152,6 +1163,8 @@
             const enableSubtitles = document.getElementById("enable-subtitles").checked;
             const subtitleStyle = document.getElementById("subtitle-style").value;
             const subtitleLang = document.getElementById("subtitle-lang").value;
+            const te = document.getElementById("translate-lang");
+            const translateLang = te ? te.value : "en";
 
             // 色彩分级
             const gradeEl = document.querySelector(".grade-option.active");
@@ -1165,7 +1178,7 @@
             const enhanceChips = document.querySelectorAll(".chip.active");
             const enhanceOptions = Array.from(enhanceChips).map(c => c.dataset.enhance);
 
-            return { transitionPattern, aspectRatio, enableSubtitles, subtitleStyle, subtitleLang, colorGrade, enableDucking, enableHarmonize, enhanceOptions };
+            return { transitionPattern, aspectRatio, enableSubtitles, subtitleStyle, subtitleLang, translateLang, colorGrade, enableDucking, enableHarmonize, enhanceOptions };
         }
 
         // ===== 上传 & 提交 =====
@@ -1349,6 +1362,7 @@
                 if (adv.enableSubtitles) {
                     formData.append("subtitle_style", adv.subtitleStyle);
                     formData.append("subtitle_lang", adv.subtitleLang);
+                    formData.append("translate_lang", adv.translateLang);
                 }
                 formData.append("color_grade", adv.colorGrade);
                 formData.append("enable_ducking", adv.enableDucking ? "true" : "false");
