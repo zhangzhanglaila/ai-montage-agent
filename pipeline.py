@@ -1358,8 +1358,8 @@ def main():
                         help="字幕源语言（zh/en/ja...，默认自动检测）")
     parser.add_argument("--enhance", nargs="*", default=[],
                         help="视频增强选项: stabilize denoise color-grade auto-reframe")
-    parser.add_argument("--reframe-aspect", type=str, default="9:16",
-                        help="auto-reframe 目标比例，如 9:16 / 3:4 / 1:1（默认 9:16）")
+    parser.add_argument("--reframe-aspect", type=str, default="16:9",
+                        help="auto-reframe 目标比例，如 16:9 / 9:16 / 3:4 / 1:1（默认 16:9，即不默认出竖屏）")
     parser.add_argument("--reframe-method", type=str, default="subject",
                         choices=["subject", "center"],
                         help="auto-reframe 裁切方式：subject 主体跟随（默认）/ center 静态居中")
@@ -1590,7 +1590,7 @@ def main():
     enable_harmonize = getattr(args, '_enable_harmonize', False)
     enable_ducking = getattr(args, '_enable_ducking', False)
     enable_reframe = getattr(args, '_enable_reframe', False)
-    reframe_aspect = _parse_ratio(getattr(args, "reframe_aspect", "9:16"))
+    reframe_aspect = _parse_ratio(getattr(args, "reframe_aspect", "16:9"), default=16 / 9)
     reframe_method = getattr(args, "reframe_method", "subject")
 
     result_path = pipeline.run(
@@ -1610,7 +1610,8 @@ def main():
     # 后处理：视频增强（只处理 pipeline.run() 未处理的项目）
     post_enhance = [e for e in args.enhance if e != "color-grade" or not color_preset]
     if post_enhance:
-        _apply_enhancement(result_path, post_enhance, color_preset)
+        _apply_enhancement(result_path, post_enhance, color_preset,
+                           reframe_aspect=reframe_aspect, reframe_method=reframe_method)
 
     # 后处理：字幕压制（--translate 时输出双语字幕）
     sub_style = args.subtitles
@@ -1700,7 +1701,8 @@ def main():
         _export_timeline(pipeline, args.export_timeline)
 
 
-def _apply_enhancement(video_path: str, enhance_options: list, color_preset: str = None):
+def _apply_enhancement(video_path: str, enhance_options: list, color_preset: str = None,
+                       reframe_aspect: float = 16 / 9, reframe_method: str = "subject"):
     """对输出视频应用增强"""
     from packages.video_enhancement import enhance_video, stabilize_video, apply_color_grade
 
@@ -1730,9 +1732,11 @@ def _apply_enhancement(video_path: str, enhance_options: list, color_preset: str
         enhanced = True
 
     if "auto-reframe" in enhance_options:
-        print("  应用自动竖屏裁切...")
+        _label = _ratio_suffix(reframe_aspect).lstrip("_").replace("x", ":")
+        print(f"  应用自动裁切 (目标 {_label} / {reframe_method})...")
         from packages.video_enhancement import auto_reframe
-        auto_reframe(video_path, temp_path)
+        auto_reframe(video_path, temp_path,
+                     target_aspect=reframe_aspect, method=reframe_method)
         if Path(temp_path).exists():
             import shutil
             shutil.move(temp_path, video_path)

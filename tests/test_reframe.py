@@ -76,5 +76,24 @@ def test_ratio_suffix_bad_input_safe():
     assert _ratio_suffix(0) == "_9x16"
 
 
+def test_enhancement_forwards_reframe_params():
+    """`--enhance auto-reframe` 路径必须能接收比例/方式参数（回归：曾硬用默认 9:16）。"""
+    import inspect
+
+    from pipeline import _apply_enhancement
+
+    sig = inspect.signature(_apply_enhancement)
+    assert sig.parameters["reframe_aspect"].default == 16 / 9, "CLI 裁切默认应为 16:9"
+    assert sig.parameters["reframe_method"].default == "subject"
+
+
+def test_parse_ratio_landscape_default():
+    """比例解析的空值兜底应为 16:9（与 CLI 默认一致）。"""
+    from pipeline import _parse_ratio
+
+    assert _parse_ratio("", default=16 / 9) == 16 / 9
+    assert _parse_ratio("9:16") == 9 / 16
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
