@@ -295,9 +295,37 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 |----|------|------|--------|----------|
 | F2.1 | 语义镜头检索 | ☑ | `9ecb480` | 2026-10-04 |
 | F2.2 | 人脸/主体追踪 | ☑ | `906681c` | 2026-10-04 |
-| F2.3 | 变速曲线 | ☐ | | |
-| F2.4 | 多轨音频混音 | ☐ | | |
+| F2.3 | 变速曲线 | ☑ | `c9d2cf3` | 2026-10-04 |
+| F2.4 | 多轨音频混音 | ☑ | `PENDING` | 2026-10-04 |
 | F2.5 | 实时预览 | ☐ | | |
+
+#### F2.3 实现记录
+- 新增 `packages/montage_engine/src/speed_curve.py`。
+- **关键决策**：用「**分段等速**」而不是一条连续速度函数。因为 ffmpeg `atempo`
+  不支持时变——若只让视频用 `setpts` 平滑变速、音频近似，两者时长会累积漂移导致
+  音画不同步。分段后每段视频/音频都被压到同一输出时长，逐段对齐 ⇒ 全程严格同步。
+- `atempo` 因子一律拆到 `[0.5, 2.0]` 再串联，兼容只支持该区间的老版 ffmpeg。
+- 预设：`rush`(渐快冲刺) / `slowmo`(冲入慢放) / `hero`(慢-快-慢) / `punch`(脉冲)，
+  另有 `SpeedCurve.ramp/sampled/constant` 供自定义。
+- **顺带修 bug**：`FFmpegExecutor.adjust_speed` 原来直接写 `-af atempo=speed`，
+  `speed > 2` 直接报错、源无音轨时 `-af` 也必失败；改为多级串联 + 音轨探测。
+- CLI：`--speed-curve` / `--speed` / `--speed-steps`。
+- 冒烟用双频音频 + FFT：2x 后仍读到 300Hz / 1200Hz（**变速不变调**），
+  音视频流时长差 0.090s，斜坡时长与解析积分仅差 0.003s。
+
+#### F2.4 实现记录
+- 新增 `packages/audio_mixer`（`AudioTrack` / `AudioMixer` / `mix_tracks_from_spec`）。
+- 通用轨道模型：`role`(voice/bgm/sfx/other) + `gain_db` 独立增益 + `start` 延迟入场
+  + `loop` 循环铺满 + `duck_windows` 闪避区间。
+- **自动闪避**：对 `role="voice"` 的轨跑 `silencedetect` 取补集得到说话时段，
+  自动写入 `role="bgm"` 轨；闪避仍用 `volume` 的 `enable='between(t,a,b)+...'`
+  时间窗（不用 `sidechaincompress`，避免被 `apad` 补长时挂起）。
+- **关键点**：`amix` 必须 `normalize=0`，否则会把总电平除以轨数，设的增益全白费；
+  所有输入统一 `aformat` 到同一采样率/声道，避免 amix 格式不一致失败。
+- CLI：`--audio-mix SPEC.json`（spec 不写 video 时自动以本次成片为底）。
+- 冒烟用**频段能量**定量验证：人声窗识别为 (1.0,2.0)/(4.0,5.0) 完全正确、
+  闪避落差 13.5dB、BGM 从 0dB 调到 -20dB 实测差 **20.0dB**（严格线性）、
+  三轨（300/1200/2600Hz）齐全、时长 6.00s。
 
 #### F2.2 实现记录
 - **发现真 bug**：原 `auto_reframe` 的动态裁切表达式写成

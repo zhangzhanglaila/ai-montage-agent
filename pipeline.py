@@ -55,6 +55,19 @@ def _parse_ratio(value, default: float = 9 / 16) -> float:
         return default
 
 
+def _probe_media_duration(path: str) -> float:
+    """获取媒体时长（秒），失败返回 0。"""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class ShotDetector:
     """镜头检测 - 使用 FFmpeg scene detect"""
 
@@ -1354,6 +1367,9 @@ def main():
                         help="整段等比变速（如 2.0 双速、0.5 半速），优先于 --speed-curve")
     parser.add_argument("--speed-steps", type=int, default=10,
                         help="变速曲线分段数（越多越平滑，默认 10）")
+    parser.add_argument("--audio-mix", type=str, default=None, metavar="SPEC.json",
+                        help="多轨混音计划(JSON)：人声/BGM/音效独立增益+自动闪避；"
+                             "spec 内不写 video 时自动以本次成片为底")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
     parser.add_argument("--index-shots", type=str, nargs="?", const="cache/index/shot_index.json",
                         default=None, metavar="PATH",
@@ -1598,6 +1614,40 @@ def main():
                 result_path = sped_path
         except Exception as e:
             print(f"  变速失败（跳过）: {e}")
+
+    # 后处理：多轨混音（人声/BGM/音效）
+    if args.audio_mix:
+        try:
+            from packages.audio_mixer import AudioMixer, AudioTrack, mix_tracks_from_spec
+
+            spec_path = Path(args.audio_mix)
+            if not spec_path.exists():
+                print(f"  混音计划不存在: {args.audio_mix}")
+            else:
+                spec = json.loads(spec_path.read_text(encoding="utf-8"))
+                spec.setdefault("video", result_path)
+                # 先把 spec 里没有的时长补成视频时长，避免 loop 轨无限长
+                if not spec.get("duration"):
+                    try:
+                        spec["duration"] = _probe_media_duration(result_path)
+                    except Exception:
+                        pass
+                mixer = AudioMixer(
+                    sample_rate=int(spec.get("sample_rate", 44100)),
+                    channels=int(spec.get("channels", 2)),
+                    duck_db=float(spec.get("duck_db", -12.0)),
+                )
+                tracks = [AudioTrack.from_dict(d) for d in spec.get("tracks", [])]
+                print(f"\n  多轨混音（{len(tracks)} 轨）...")
+                print(mixer.describe(tracks))
+                mixed_path = result_path.replace(".mp4", "_mixed.mp4")
+                mix_tracks_from_spec({**spec, "video": result_path}, mixed_path)
+                if Path(mixed_path).exists():
+                    import os
+                    os.replace(mixed_path, result_path)
+                    print("  混音完成!")
+        except Exception as e:
+            print(f"  多轨混音失败（跳过）: {e}")
 
     # 后处理：封面生成
     if args.cover:
