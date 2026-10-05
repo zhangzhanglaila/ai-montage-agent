@@ -240,7 +240,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 
 | ID | 功能 | 要点 | 预估 | commit |
 |----|------|------|------|--------|
-| F3.1 | 任务队列 + 持久化 | Celery/RQ + Redis + SQLite/Postgres，替换内存态任务表 | 6–8 | `feat(infra): 引入任务队列与任务持久化` |
+| F3.1 | 任务队列 + 持久化 | ~~Celery/RQ + Redis~~ → **纯标准库 SQLite + worker 线程**（离线可用，接口可平替 Celery），替换内存态任务表 | 6–8 | `feat(infra): 引入任务队列与任务持久化` |
 | F3.2 | Docker 部署 | Dockerfile（ffmpeg + Playwright + torch 分层缓存）+ compose | 3–4 | `feat(infra): 新增 Docker 一键部署` |
 | F3.3 | 一键投稿发布 | 对接 B站开放平台 / 抖音 / YouTube Data API | 6–8 | `feat(publish): 新增 B 站一键投稿` |
 | F3.4 | 批量成片 | 一条 BGM × N 组素材 → N 条成片（矩阵号） | 4–5 | `feat(batch): 新增批量成片任务` |
@@ -399,11 +399,50 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
 ### Phase 3 — v0.7 / v1.0
 | ID | 功能 | 状态 | commit | 完成日期 |
 |----|------|------|--------|----------|
-| F3.1 | 任务队列 + 持久化 | ☐ | | |
+| F3.1 | 任务队列 + 持久化 | ☑ | `fe48893` | 2026-10-05 |
 | F3.2 | Docker 部署 | ☐ | | |
 | F3.3 | 一键投稿发布 | ☐ | | |
 | F3.4 | 批量成片 | ☐ | | |
 | F3.5 | 风格学习 / 模板市场 | ☐ | | |
+
+#### F3.1 实现记录
+- **技术选型（重要）**：计划里写的是 Celery/RQ + Redis，但本项目跑在**离线环境**
+  （未装 Redis，也不该为"任务能重试"强绑一个中间件）。改用**纯标准库 SQLite +
+  进程内 worker 线程**实现等价语义，接口做成可替换（将来接 Celery 只要实现同名
+  方法，WebUI/CLI 不用改）。
+- 新增 `packages/task_queue`：
+  - `store.TaskStore`：SQLite（WAL + 单连接 + RLock，多线程安全）。
+    `claim_next()` 用 `BEGIN IMMEDIATE` 事务 + 条件 UPDATE，**并发下同一任务不会被
+    认领两次**（实测 6 线程抢 20 个任务，20 个唯一认领、零重复）。
+    `mark_error()` 按 `min(base*2^(n-1), cap)` 退避重新入队，超 `max_attempts` 才落 error。
+    `resume_stale()` 把 `running` 且 `updated_at` 超时的任务捞回队列；次数已用尽的
+    直接转 error（**避免崩溃循环**）。
+  - `store.TaskHandle`：dict 风格句柄，`handle["progress"]=40` 即写库。于是 WebUI 里
+    170 行的 `_run_montage_task` **只改了一行**（`task = _tasks[id]` →
+    `task = store.handle(id)`）就迁移到持久化存储。
+  - `worker.TaskWorker`：后台 daemon 线程轮询；启动时先 `resume_stale()` 续跑；
+    `stop()` 用 Event 中断睡眠实现优雅退出；handler 抛异常才触发重试。
+  - `errors.TaskError(retryable=False)`：确定性失败（素材搜不到、参数非法）
+    **不消耗重试次数**，一次落 error。
+- WebUI（`packages/webui/src/app.py`）：
+  - 删掉 `_tasks = {}` 内存字典，全部改走持久化任务表；
+  - `/api/montage` 改为"落盘 + enqueue"，由 worker 执行（不再用 `BackgroundTasks`）；
+  - FastAPI `lifespan` 启动/停止 worker；
+  - 新增 `/api/tasks`（列表+统计）、`/api/task/{id}/retry`、`/api/task/{id}/cancel`；
+  - SSE 进度接口只在 `done/error/canceled` 结束 —— `queued` 可能是"重试等待中"，
+    要继续推送（比原来的内存版更正确）。
+- CLI（`pipeline.py`）：`--task-list` / `--task-status` / `--task-show` /
+  `--task-retry` / `--task-cancel` / `--task-resume` / `--task-stale` / `--task-db`。
+- 门禁：
+  - `pytest` **35 passed**（新增 `tests/test_task_queue.py` 10 例，含 WebUI 集成）；
+  - `scripts/smoke_task_queue.py` 6 项可证伪断言全过：持久化跨连接 /
+    原子认领 / 退避重试(attempts=3 & 退避曲线 [1,2,4,8,8,8] & 到点才可认领) /
+    不可重试不重试 / 断点续跑 / worker 生命周期。
+  - **真实 uvicorn 端到端**：起服务提交任务→执行→终态；随后**杀进程**、注入一条
+    卡在 `running` 的任务、重启服务 → 自动重新入队并执行（attempts 1→2、
+    `started_at` 更新），确证"进程重启不丢任务"。
+- 后续可选项：worker 目前是**进程内线程**；要横向扩展可换成独立 worker 进程
+  （接口已就绪），或替换为 Celery/RQ 后端。
 
 ---
 
