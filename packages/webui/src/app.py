@@ -12,17 +12,15 @@ import json
 import os
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="AI Montage Agent", version="1.0.0")
-
-# 任务存储
-_tasks = {}
+from packages.task_queue import get_store, get_worker
 
 UPLOAD_DIR = Path("uploads")
 OUTPUT_DIR = Path("output")
@@ -30,22 +28,74 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
-def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query: str,
-                      style: str, output_name: str, query: str, source: str, clip_limit: int,
-                      color_preset: str = None, stabilize: bool = False,
-                      aspect_ratio: str = "16/9", enable_subtitles: bool = False,
-                      subtitle_style: str = "tiktok", subtitle_lang: str = "auto",
-                      translate_lang: str = "",
-                      color_grade: str = "none", enable_ducking: bool = False,
-                      enable_harmonize: bool = False, enhance_options: list = None,
-                      transition_pattern_id: str = "auto"):
-    """后台运行完整流程：搜索下载 → pipeline → 后处理"""
+def _store():
+    """持久化任务表（SQLite）。进程重启后任务不丢。"""
+    return get_store()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """启动任务 worker（会先续跑上次进程残留的任务），退出时优雅停止。"""
+    worker = get_worker()
+    worker.register("montage", _run_montage_task)
+    worker.start()
+    try:
+        yield
+    finally:
+        worker.stop()
+
+
+app = FastAPI(title="AI Montage Agent", version="1.0.0", lifespan=_lifespan)
+
+
+# 任务载荷默认值（与 /api/montage 的提交字段一一对应）
+_TASK_DEFAULTS = {
+    "video_paths": [], "bgm_path": None, "bgm_query": None, "style": "dynamic",
+    "output_name": "final.mp4", "query": None, "source": "playphrase",
+    "clip_limit": 20, "color_preset": None, "stabilize": False,
+    "aspect_ratio": "16/9", "enable_subtitles": False, "subtitle_style": "tiktok",
+    "subtitle_lang": "auto", "translate_lang": "", "color_grade": "none",
+    "enable_ducking": False, "enable_harmonize": False, "enhance_options": [],
+    "transition_pattern_id": "auto",
+}
+
+
+def _run_montage_task(task_id: str, params: dict):
+    """执行完整流程：搜索下载 → pipeline → 后处理（由任务队列 worker 调用）。
+
+    失败时**抛出异常**而不是吞掉，队列才能按退避策略重试；
+    "搜不到素材 / 参数不对"这类确定性失败抛 `TaskError(retryable=False)`，
+    不浪费重试次数。
+    """
     import sys
     import traceback
+    from packages.task_queue import TaskError
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from pipeline import MontagePipeline
 
-    task = _tasks[task_id]
+    p = {**_TASK_DEFAULTS, **(params or {})}
+    video_paths = p["video_paths"] or []
+    bgm_path = p["bgm_path"]
+    bgm_query = p["bgm_query"]
+    style = p["style"]
+    output_name = p["output_name"]
+    query = p["query"]
+    source = p["source"]
+    clip_limit = p["clip_limit"]
+    color_preset = p["color_preset"]
+    stabilize = p["stabilize"]
+    aspect_ratio = p["aspect_ratio"]
+    enable_subtitles = p["enable_subtitles"]
+    subtitle_style = p["subtitle_style"]
+    subtitle_lang = p["subtitle_lang"]
+    translate_lang = p["translate_lang"]
+    color_grade = p["color_grade"]
+    enable_ducking = p["enable_ducking"]
+    enable_harmonize = p["enable_harmonize"]
+    enhance_options = p["enhance_options"] or []
+    transition_pattern_id = p["transition_pattern_id"]
+
+    task = _store().handle(task_id)
     try:
         # ===== 阶段 1：BGM 搜索下载 =====
         if bgm_query:
@@ -56,16 +106,13 @@ def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query:
             bgm_crawler = BgmCrawler()
             bgm_paths = bgm_crawler.search_and_download(bgm_query, max_clips=1)
             if not bgm_paths:
-                task["status"] = "error"
-                task["message"] = f"未找到 BGM「{bgm_query}」，请换个关键词试试"
-                return
+                raise TaskError(f"未找到 BGM「{bgm_query}」，请换个关键词试试",
+                                retryable=False)
             bgm_path = bgm_paths[0]
             task["progress"] = 8
             task["message"] = "BGM 下载完成 ✓"
         elif not bgm_path:
-            task["status"] = "error"
-            task["message"] = "请提供 BGM 文件或搜索关键词"
-            return
+            raise TaskError("请提供 BGM 文件或搜索关键词", retryable=False)
 
         # ===== 阶段 2：视频素材搜索下载 =====
         if query:
@@ -102,24 +149,22 @@ def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query:
                 video_paths = crawler.search_and_download(query, max_clips=clip_limit)
 
                 if not video_paths:
-                    task["status"] = "error"
-                    task["message"] = f"搜索「{query}」未找到结果，请检查关键词或换一个来源试试"
-                    return
+                    raise TaskError(
+                        f"搜索「{query}」未找到结果，请检查关键词或换一个来源试试",
+                        retryable=False)
 
                 task["progress"] = 25
                 task["message"] = f"素材下载完成，共 {len(video_paths)} 个片段 ✓"
 
+            except TaskError:
+                raise
             except Exception as e:
-                task["status"] = "error"
-                task["message"] = f"素材搜索失败: {str(e)}"
                 print(f"[Crawler Error] task={task_id}, source={source}")
                 traceback.print_exc()
-                return
+                raise TaskError(f"素材搜索失败: {str(e)}", retryable=True)
 
         if not video_paths:
-            task["status"] = "error"
-            task["message"] = "没有可用的视频文件，请检查搜索关键词"
-            return
+            raise TaskError("没有可用的视频文件，请检查搜索关键词", retryable=False)
 
         # ===== 阶段 3：AI 混剪 pipeline =====
         task["status"] = "running"
@@ -205,11 +250,18 @@ def _run_montage_task(task_id: str, video_paths: list, bgm_path: str, bgm_query:
         task["message"] = "混剪完成!"
         task["output_path"] = result
 
+    except TaskError as e:
+        # 确定性失败（素材搜不到 / 参数不对）：打一行日志即可，不必打整段堆栈
+        task["status"] = "error"
+        task["message"] = str(e)
+        print(f"[任务终止] task={task_id}: {e}")
+        raise
     except Exception as e:
         task["status"] = "error"
         task["message"] = f"混剪失败: {str(e)}"
         print(f"[Pipeline Error] task={task_id}")
         traceback.print_exc()
+        raise
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -255,7 +307,6 @@ async def upload_bgm(file: UploadFile = File(...)):
 
 @app.post("/api/montage")
 async def create_montage(
-    background_tasks: BackgroundTasks,
     video_paths: str = Form(...),        # JSON 数组字符串
     bgm_path: Optional[str] = Form(None),
     bgm_query: Optional[str] = Form(None),
@@ -277,16 +328,7 @@ async def create_montage(
     enhance_options: str = Form("[]"),
     transition_pattern: str = Form("auto"),
 ):
-    """创建混剪任务 — 立即返回 task_id，搜索下载在后台进行"""
-    task_id = uuid.uuid4().hex
-    _tasks[task_id] = {
-        "id": task_id,
-        "status": "pending",
-        "progress": 0,
-        "message": "任务已创建，正在准备...",
-        "output_path": None,
-    }
-
+    """创建混剪任务 — 落盘后立即返回 task_id，执行交给持久化任务队列。"""
     # 解析本地上传的视频路径
     video_paths_list = json.loads(video_paths) if video_paths else []
 
@@ -300,41 +342,95 @@ async def create_montage(
         color_preset = preset_params.get("color_preset")
         stabilize = preset_params.get("stabilize", False)
 
-    # 解析高级设置
-    _enhance = json.loads(enhance_options) if enhance_options else []
+    payload = {
+        "video_paths": video_paths_list,
+        "bgm_path": bgm_path,
+        "bgm_query": bgm_query,
+        "style": style,
+        "output_name": output_name,
+        "query": query,
+        "source": source,
+        "clip_limit": clip_limit,
+        "color_preset": color_preset,
+        "stabilize": stabilize,
+        "aspect_ratio": aspect_ratio,
+        "enable_subtitles": enable_subtitles == "true",
+        "subtitle_style": subtitle_style,
+        "subtitle_lang": subtitle_lang,
+        "translate_lang": translate_lang,
+        "color_grade": color_grade,
+        "enable_ducking": enable_ducking == "true",
+        "enable_harmonize": enable_harmonize == "true",
+        "enhance_options": json.loads(enhance_options) if enhance_options else [],
+        "transition_pattern_id": transition_pattern,
+    }
 
-    # 立即返回 task_id，所有耗时操作在后台执行
-    background_tasks.add_task(
-        _run_montage_task, task_id, video_paths_list, bgm_path, bgm_query,
-        style, output_name, query, source, clip_limit, color_preset, stabilize,
-        aspect_ratio, enable_subtitles == "true", subtitle_style, subtitle_lang,
-        translate_lang,
-        color_grade, enable_ducking == "true", enable_harmonize == "true", _enhance,
-        transition_pattern,
-    )
+    store = _store()
+    task = store.create("montage", payload, message="任务已创建，正在等待执行")
+    store.enqueue(task["id"])
+    return {"task_id": task["id"]}
 
-    return {"task_id": task_id}
+
+@app.get("/api/tasks")
+async def list_tasks(status: Optional[str] = None, limit: int = 50):
+    """列出任务（默认最近 50 条）。"""
+    tasks = _store().list(status=status, limit=limit)
+    return {"tasks": tasks, "stats": _store().stats()}
+
+
+def _require_done(task_id: str):
+    """取"已完成且有产物"的任务；否则返回 (None, 错误响应体)。"""
+    task = _store().get(task_id)
+    if task is None:
+        return None, {"error": "任务不存在"}
+    if task.get("status") != "done" or not task.get("output_path"):
+        return None, {"error": "任务未完成"}
+    return task, None
+
+
+@app.post("/api/task/{task_id}/retry")
+async def retry_task(task_id: str):
+    """手动重试一个失败/中断的任务。"""
+    store = _store()
+    if store.get(task_id) is None:
+        return {"error": "任务不存在"}
+    store.retry(task_id)
+    return {"status": "ok", "task": store.get(task_id)}
+
+
+@app.post("/api/task/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """取消任务（仅对未开始/排队中的有效）。"""
+    store = _store()
+    if store.get(task_id) is None:
+        return {"error": "任务不存在"}
+    store.cancel(task_id)
+    return {"status": "ok", "task": store.get(task_id)}
 
 
 @app.get("/api/task/{task_id}")
 async def get_task(task_id: str):
     """查询任务状态"""
-    if task_id not in _tasks:
+    task = _store().get(task_id)
+    if task is None:
         return {"error": "任务不存在"}
-    return _tasks[task_id]
+    return task
 
 
 @app.get("/api/task/{task_id}/progress")
 async def task_progress(task_id: str):
     """SSE 实时进度"""
+    store = _store()
+
     async def event_generator():
         while True:
-            if task_id not in _tasks:
+            task = store.get(task_id)
+            if task is None:
                 yield f"data: {json.dumps({'error': 'not found'})}\n\n"
                 break
-            task = _tasks[task_id]
-            yield f"data: {json.dumps(task)}\n\n"
-            if task["status"] in ("done", "error"):
+            yield f"data: {json.dumps(task, ensure_ascii=False)}\n\n"
+            # queued 可能是"失败后等待重试"，仍要继续推送
+            if task["status"] in ("done", "error", "canceled"):
                 break
             await asyncio.sleep(1)
 
@@ -344,11 +440,9 @@ async def task_progress(task_id: str):
 @app.get("/api/download/{task_id}")
 async def download_result(task_id: str):
     """下载结果视频"""
-    if task_id not in _tasks:
-        return {"error": "任务不存在"}
-    task = _tasks[task_id]
-    if task["status"] != "done" or not task["output_path"]:
-        return {"error": "任务未完成"}
+    task, err = _require_done(task_id)
+    if err:
+        return err
     return FileResponse(task["output_path"], media_type="video/mp4", filename="montage.mp4")
 
 
@@ -357,16 +451,15 @@ async def download_result(task_id: str):
 async def task_proxy(task_id: str, width: int = 480, crf: int = 32,
                      max_duration: Optional[float] = None, refresh: int = 0):
     """低码率代理视频（缓存）。用于前端秒开播放。"""
-    if task_id not in _tasks:
-        return {"error": "任务不存在"}
-    task = _tasks[task_id]
-    if task["status"] != "done" or not task["output_path"]:
-        return {"error": "任务未完成"}
+    task, err = _require_done(task_id)
+    if err:
+        return err
     try:
         from .preview import get_proxy
         info = get_proxy(task["output_path"], width=width, crf=crf,
                          max_duration=max_duration, force=bool(refresh))
-        task.setdefault("proxy", {})["info"] = info
+        if info.get("path"):
+            _store().update(task_id, proxy={"path": info["path"], "info": info})
         return {
             "status": "ok",
             "url": f"/api/task/{task_id}/proxy/video?width={width}&crf={crf}",
@@ -380,11 +473,9 @@ async def task_proxy(task_id: str, width: int = 480, crf: int = 32,
 async def task_proxy_video(task_id: str, width: int = 480, crf: int = 32,
                            max_duration: Optional[float] = None):
     """直接返回代理视频文件（未生成则现场生成）。"""
-    if task_id not in _tasks:
-        return {"error": "任务不存在"}
-    task = _tasks[task_id]
-    if task["status"] != "done" or not task["output_path"]:
-        return {"error": "任务未完成"}
+    task, err = _require_done(task_id)
+    if err:
+        return err
     try:
         from .preview import get_proxy
         info = get_proxy(task["output_path"], width=width, crf=crf,
@@ -405,11 +496,9 @@ async def create_param_preview(
     crf: int = Form(32),
 ):
     """按当前参数快速渲染一小段预览（默认前 6 秒），用于"边调参边看"。"""
-    if task_id not in _tasks:
-        return {"error": "任务不存在"}
-    task = _tasks[task_id]
-    if task["status"] != "done" or not task["output_path"]:
-        return {"error": "任务未完成"}
+    task, err = _require_done(task_id)
+    if err:
+        return err
     try:
         from .preview import get_param_preview
         # 若任务侧已生成过字幕文件，则预览也带上字幕
@@ -423,11 +512,12 @@ async def create_param_preview(
             crf=crf, color_preset=None if color_grade in ("none", "") else color_grade,
             subtitle_path=sub_path,
         )
-        previews = task.setdefault("previews", [])
+        previews = list(task.get("previews") or [])
         pid = f"p{len(previews) + 1}"
         previews.append({"id": pid, **info, "params": {
             "start": start, "duration": duration, "color_grade": color_grade,
             "subtitle_style": subtitle_style}})
+        _store().update(task_id, previews=previews)
         return {
             "status": "ok", "preview_id": pid,
             "url": f"/api/task/{task_id}/preview/{pid}",
@@ -440,9 +530,10 @@ async def create_param_preview(
 @app.get("/api/task/{task_id}/preview/{preview_id}")
 async def get_param_preview_file(task_id: str, preview_id: str):
     """取回参数预览文件。"""
-    if task_id not in _tasks:
+    task = _store().get(task_id)
+    if task is None:
         return {"error": "任务不存在"}
-    for p in _tasks[task_id].get("previews", []):
+    for p in task.get("previews") or []:
         if p["id"] == preview_id and Path(p["path"]).exists():
             return FileResponse(p["path"], media_type="video/mp4", filename="preview.mp4")
     return {"error": "预览不存在"}

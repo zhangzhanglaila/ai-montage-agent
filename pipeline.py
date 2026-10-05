@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -82,6 +83,45 @@ def _ratio_suffix(aspect: float, default_aspect: float = 9 / 16) -> str:
     # 非常见比例：退化为可读的十进制（小数点转 p，避免文件名带点）
     txt = f"{aspect:.4f}".rstrip("0").rstrip(".").replace(".", "p")
     return f"_{txt}"
+
+
+def _fmt_ts(ts) -> str:
+    """时间戳 -> 本地时间字符串。"""
+    if not ts:
+        return "-"
+    try:
+        return time.strftime("%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except (TypeError, ValueError, OSError):
+        return "-"
+
+
+def _print_task_table(rows) -> None:
+    """打印任务列表。"""
+    if not rows:
+        print("  （无任务）")
+        return
+    print(f"  {'ID':14s} {'KIND':8s} {'STATUS':9s} {'TRY':5s} {'PROG':6s} "
+          f"{'UPDATED':15s} MESSAGE")
+    for t in rows:
+        tries = f"{t.get('attempts', 0)}/{t.get('max_attempts', 0)}"
+        print(f"  {t['id'][:14]:14s} {str(t.get('kind', ''))[:8]:8s} "
+              f"{t['status']:9s} {tries:5s} {t.get('progress', 0):>4d}%  "
+              f"{_fmt_ts(t.get('updated_at')):15s} "
+              f"{str(t.get('message') or '')[:38]}")
+
+
+def _print_task_detail(task) -> None:
+    """打印单个任务详情。"""
+    for key in ("id", "kind", "status", "progress", "attempts", "max_attempts",
+                "priority", "output_path", "error", "message",
+                "created_at", "updated_at", "started_at", "finished_at"):
+        value = task.get(key)
+        if key.endswith("_at"):
+            value = _fmt_ts(value)
+        print(f"  {key:13s}: {value}")
+    payload = task.get("payload") or {}
+    brief = json.dumps(payload, ensure_ascii=False)
+    print(f"  {'payload':13s}: {brief[:400]}")
 
 
 def _probe_media_duration(path: str) -> float:
@@ -1413,6 +1453,24 @@ def main():
                         choices=["auto", "clip", "heuristic"],
                         help="镜头编码器：auto(优先CLIP)/clip/heuristic(离线)")
 
+    # ---- 任务队列管理（持久化任务表，不跑混剪）----
+    parser.add_argument("--task-db", type=str, default=None, metavar="PATH",
+                        help="任务库路径（默认 cache/tasks.db 或环境变量 MONTAGE_TASK_DB）")
+    parser.add_argument("--task-list", action="store_true", help="列出持久化任务")
+    parser.add_argument("--task-status", type=str, default=None,
+                        choices=["pending", "queued", "running", "done", "error", "canceled"],
+                        help="配合 --task-list：只显示某状态的任务")
+    parser.add_argument("--task-show", type=str, default=None, metavar="ID",
+                        help="查看单个任务详情")
+    parser.add_argument("--task-retry", type=str, default=None, metavar="ID",
+                        help="手动重试任务（清零尝试次数并重新入队）")
+    parser.add_argument("--task-cancel", type=str, default=None, metavar="ID",
+                        help="取消任务")
+    parser.add_argument("--task-resume", action="store_true",
+                        help="把卡在 running 的超时任务重新入队（进程中断后断点续跑）")
+    parser.add_argument("--task-stale", type=float, default=600.0,
+                        help="--task-resume 的超时判定秒数（默认 600）")
+
     args = parser.parse_args()
 
     # 风格预设模板处理
@@ -1440,6 +1498,49 @@ def main():
         print("启动 WebUI: http://localhost:8000")
         start_webui()
         return
+
+    # 任务队列管理模式（只读/操作持久化任务表，不跑混剪）
+    if any([args.task_list, args.task_show, args.task_retry,
+            args.task_cancel, args.task_resume]):
+        from packages.task_queue import get_store
+        store = get_store(args.task_db)
+        print(f"任务库: {store.db_path}")
+
+        if args.task_show:
+            task = store.get(args.task_show)
+            if task is None:
+                print(f"任务不存在: {args.task_show}")
+                return 1
+            _print_task_detail(task)
+            return 0
+
+        if args.task_retry:
+            if store.get(args.task_retry) is None:
+                print(f"任务不存在: {args.task_retry}")
+                return 1
+            store.retry(args.task_retry)
+            print(f"已重新入队: {args.task_retry}（WebUI 的 worker 启动后会自动执行）")
+            return 0
+
+        if args.task_cancel:
+            if store.get(args.task_cancel) is None:
+                print(f"任务不存在: {args.task_cancel}")
+                return 1
+            store.cancel(args.task_cancel)
+            print(f"已取消: {args.task_cancel}")
+            return 0
+
+        if args.task_resume:
+            info = store.resume_stale(stale_seconds=args.task_stale)
+            print(f"续跑: 重新入队 {info['resumed']} 个，"
+                  f"重试耗尽转失败 {info['exhausted']} 个")
+            return 0
+
+        rows = store.list(status=args.task_status, limit=50)
+        _print_task_table(rows)
+        stats = store.stats()
+        print("  统计: " + "  ".join(f"{k}={v}" for k, v in stats.items()))
+        return 0
 
     # 镜头索引构建模式
     if args.index_shots:
