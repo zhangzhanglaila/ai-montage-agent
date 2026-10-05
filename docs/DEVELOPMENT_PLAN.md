@@ -240,7 +240,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 
 | ID | 功能 | 要点 | 预估 | commit |
 |----|------|------|------|--------|
-| F3.1 | 任务队列 + 持久化 | ~~Celery/RQ + Redis~~ → **纯标准库 SQLite + worker 线程**（离线可用，接口可平替 Celery），替换内存态任务表 | 6–8 | `feat(infra): 引入任务队列与任务持久化` |
+| F3.1 | 任务队列 + 持久化 | ~~Celery/RQ + Redis~~ → **纯标准库 SQLite + worker 线程**（离线可用，接口可平替 Celery），替换内存态任务表；**另有可选 Redis 后端**（多进程/多机共享任务表，`MONTAGE_TASK_BACKEND=redis` 一行切换） | 6–8 | `feat(infra): 引入任务队列与任务持久化` |
 | F3.2 | Docker 部署 | Dockerfile（ffmpeg + Playwright + torch 分层缓存）+ compose | 3–4 | `feat(infra): 新增 Docker 一键部署` |
 | F3.3 | 一键投稿发布 | 对接 B站开放平台 / 抖音 / YouTube Data API | 6–8 | `feat(publish): 新增 B 站一键投稿` |
 | F3.4 | 批量成片 | 一条 BGM × N 组素材 → N 条成片（矩阵号） | 4–5 | `feat(batch): 新增批量成片任务` |
@@ -400,6 +400,7 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
 | ID | 功能 | 状态 | commit | 完成日期 |
 |----|------|------|--------|----------|
 | F3.1 | 任务队列 + 持久化 | ☑ | `fe48893` | 2026-10-05 |
+| F3.1-r | 任务队列 Redis 后端（可选） | ☑ | `<待回填>` | 2026-10-06 |
 | F3.2 | Docker 部署 | ☐ | | |
 | F3.3 | 一键投稿发布 | ☐ | | |
 | F3.4 | 批量成片 | ☐ | | |
@@ -443,6 +444,40 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
     `started_at` 更新），确证"进程重启不丢任务"。
 - 后续可选项：worker 目前是**进程内线程**；要横向扩展可换成独立 worker 进程
   （接口已就绪），或替换为 Celery/RQ 后端。
+
+#### F3.1-r 实现记录（Redis 后端，可选扩展）
+- **定位**：SQLite 是默认后端（离线可用，单机够用）。当需要**多进程 / 多机共享同一张
+  任务表**（多个 WebUI 实例、独立 worker 进程、横向扩容）时，切 Redis：
+  `MONTAGE_TASK_BACKEND=redis` + `MONTAGE_REDIS_URL=redis://host:6379/0`。
+  WebUI / CLI / worker 业务代码**一行不改**（`runtime.get_store()` 按环境变量选实现）。
+- 新增 `packages/task_queue/src/redis_store.py`，与 `TaskStore` **同接口**：
+  - 数据结构：`{prefix}:task:<id>`(HASH) / `:queued`(ZSET，score=`seq-priority*1e12`
+    编码排队次序) / `:running`(ZSET，score=updated_at，供 stale 扫描) / `:ids`(ZSET) / `:seq`。
+  - `claim_next()` 用 **Lua `EVAL`** 在服务端原子完成「找→校验退避→改状态+attempts+1→
+    移出 queued→记入 running」，多进程并发也不会重复认领。
+  - `runtime.py` 增加落后端切换；`__init__` 导出 `RedisTaskStore` / `redis_available` /
+    `default_backend` / `default_redis_url`。
+- **真实 Redis 验证中发现的两个兼容性坑（只有真服务端才暴露，已修）**：
+  1. **RESP3/HELLO**：redis-py ≥ 8 默认 `protocol=3`，握手先发 `HELLO`，而老 Redis
+     3.0.504 不认识 → `unknown command 'HELLO'`。必须显式 `protocol=2`。
+  2. **多字段 HSET**：`HSET key f1 v1 f2 v2` 是 Redis **4.0** 才有的；3.x 只认
+     `HSET key field value`。redis-py 的 `hset(mapping=...)` 恰好发多字段形式 →
+     `wrong number of arguments for 'hset'`。改为 **逐字段 HSET**（Lua 内同样拆开）。
+- **接口一致性修复**：Redis 版 `update()` 原本用当前时钟覆盖 `updated_at`，而 SQLite 版
+  尊重调用方显式传入的值（`updated_at` 本身在 `_COLUMNS` 内）→ 导致 `resume_stale`
+  的 stale 判定在 Redis 上失效（测试抓出）。已对齐语义；顺带删掉 SQLite 里那段永远
+  走不到的 `elif key == "updated_at": continue` 死分支。
+- 门禁：
+  - `pytest` **42 passed**（`tests/test_task_queue.py` 新增 7 例 Redis 测试，
+    `skipif(not redis_available(...))` 门控，无 Redis 的机器自动跳过、不影响全绿）；
+  - `scripts/smoke_task_queue_redis.py` **25 项可证伪断言全过**（真 Redis 实例）：
+    基础读写 / 退避曲线 `[1,2,4,8,8]` / 非重试落终态 / 6 线程×20 任务原子抢单零重复 /
+    `resume_stale` 计数 `{resumed:1, exhausted:1}` / worker 端到端失败重试到 done /
+    **CLI `pipeline.py --task-list` 走 Redis 后端并列出任务**；
+  - `scripts/smoke_task_queue.py`（SQLite）6 项**无回归**；
+  - Redis 连不上时该冒烟脚本打印 SKIP 并退出码 0（不拖垮无 Redis 环境的门禁）。
+- 验证环境：用户本机 `D:\programs\Redis-x64-3.0.504`（Redis **3.0.504** Windows 版），
+  `redis-py 8.0.0`。
 
 ---
 

@@ -177,8 +177,6 @@ class TaskStore:
                 elif key in _JSON_FIELDS:
                     value = _dumps(value)
                 cols[key] = value
-            elif key == "updated_at":
-                continue
             else:
                 extra_patch[key] = value
 

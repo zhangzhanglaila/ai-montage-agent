@@ -4,9 +4,11 @@
 并额外覆盖 **WebUI 集成**（提交 -> 落盘 -> worker 执行 -> 终态）。
 """
 
+import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -15,9 +17,11 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from packages.task_queue import (  # noqa: E402
+    RedisTaskStore,
     TaskError,
     TaskStore,
     TaskWorker,
+    redis_available,
 )
 
 
@@ -235,3 +239,178 @@ def test_webui_submit_persists_and_fails_fast(task_db):
     store = TaskStore(task_db)
     assert store.get(tid)["status"] == "error"
     store.close()
+
+
+# ======================================================================
+# Redis 后端（F3.1 扩展）：与 SQLite 版**同接口**，多进程/多机共享任务表
+# ======================================================================
+# 本机无 Redis 时整块自动跳过，不影响其它环境的 `pytest` 全绿。
+REDIS_URL = os.environ.get("MONTAGE_TEST_REDIS_URL", "redis://127.0.0.1:6379/0")
+
+requires_redis = pytest.mark.skipif(
+    not redis_available(REDIS_URL),
+    reason=f"未检测到可用 Redis：{REDIS_URL}（设 MONTAGE_TEST_REDIS_URL 可指定）",
+)
+
+
+def test_redis_available_probe_semantics():
+    """``redis_available()`` 无参只判依赖；传 URL 判连通性且从不抛错。"""
+    assert redis_available() is True                       # 已装 redis-py
+    assert redis_available("redis://127.0.0.1:1") is False  # 连不上 -> False，不抛错
+
+
+@pytest.fixture()
+def redis_store():
+    """每个用例一个独立 prefix，用例结束清空并关连接。"""
+    made = []
+
+    def make(**kw):
+        st = RedisTaskStore(
+            REDIS_URL, prefix=f"tqtest:{uuid.uuid4().hex[:8]}", **kw)
+        made.append(st)
+        return st
+
+    yield make
+    for st in made:
+        try:
+            st.clear_all()
+        except Exception:  # noqa: BLE001
+            pass
+        st.close()
+
+
+@requires_redis
+def test_redis_interface_parity_with_sqlite(redis_store):
+    """核心读写语义与 SQLite 版逐一对齐。"""
+    st = redis_store()
+    row = st.create("montage", {"clips": ["a.mp4"], "n": 1}, task_id="k1")
+    assert row["status"] == "pending"
+    assert row["seq"] == 1
+    assert st.get("k1")["payload"] == {"clips": ["a.mp4"], "n": 1}
+
+    st.enqueue("k1")
+    assert st.get("k1")["status"] == "queued"
+
+    claimed = st.claim_next()
+    assert claimed["id"] == "k1"
+    assert st.get("k1")["status"] == "running"
+    assert st.get("k1")["attempts"] == 1
+
+    h = st.handle("k1")                          # 赋值即持久化
+    h["stage"] = "render"
+    h["progress"] = 50
+    got = st.get("k1")
+    assert (got["stage"], got["progress"]) == ("render", 50)
+
+    st.mark_done("k1", output_path="out.mp4", result={"ok": True})
+    done = st.get("k1")
+    assert done["status"] == "done" and done["progress"] == 100
+    assert done["output_path"] == "out.mp4"
+    assert done["result"] == {"ok": True}
+
+    assert [r["id"] for r in st.list()] == ["k1"]
+    assert st.stats()["done"] == 1
+    assert st.purge() == 1
+    assert st.get("k1") is None
+
+
+@requires_redis
+def test_redis_atomic_claim_no_duplicates(redis_store):
+    """6 线程并发抢单，Lua 保证不重复认领。"""
+    st = redis_store()
+    for i in range(20):
+        st.create("montage", {"i": i}, task_id=f"a{i:02d}")
+        st.enqueue(f"a{i:02d}")
+
+    claimed, lock = [], threading.Lock()
+
+    def run():
+        while True:
+            row = st.claim_next()
+            if row is None:
+                return
+            with lock:
+                claimed.append(row["id"])
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(claimed) == 20
+    assert len(set(claimed)) == 20
+
+
+@requires_redis
+def test_redis_backoff_curve_and_gating(redis_store):
+    st = redis_store(backoff_base=1.0, backoff_cap=8.0)
+    assert [st._backoff(n) for n in (1, 2, 3, 4, 5)] == [1.0, 2.0, 4.0, 8.0, 8.0]
+
+    st.create("montage", {}, task_id="bk", max_attempts=3)
+    st.enqueue("bk")
+    st.claim_next(now=0.0)                                   # attempts -> 1
+    st.mark_error("bk", "boom", retryable=True, now=100.0)
+    row = st.get("bk")
+    assert row["status"] == "queued"
+    assert row["next_retry_at"] == pytest.approx(101.0)
+    assert st.claim_next(now=100.9) is None                  # 未到退避点
+    assert st.claim_next(now=101.1) is not None              # 到点才认领
+
+
+@requires_redis
+def test_redis_resume_stale(redis_store):
+    st = redis_store()
+    st.create("montage", {}, task_id="fresh", max_attempts=3)
+    st.update("fresh", status="running", attempts=1, updated_at=1.0)
+    st.create("montage", {}, task_id="burnt", max_attempts=3)
+    st.update("burnt", status="running", attempts=3, updated_at=1.0)
+
+    info = st.resume_stale(stale_seconds=60, now=1_000_000.0)
+    assert info == {"resumed": 1, "exhausted": 1}
+    assert st.get("fresh")["status"] == "queued"
+    assert st.get("burnt")["status"] == "error"
+
+
+@requires_redis
+def test_redis_worker_retry_then_success(redis_store):
+    st = redis_store(backoff_base=0.01, backoff_cap=0.05)
+    calls = []
+
+    def flaky(tid, payload):
+        calls.append(tid)
+        if len(calls) < 3:
+            raise RuntimeError("boom")
+
+    worker = _quiet_worker(st, poll_interval=0.01)
+    worker.register("montage", flaky)
+    st.create("montage", {}, task_id="r1", max_attempts=3)
+    st.enqueue("r1")
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        worker.run_once()
+        if st.get("r1")["status"] in ("done", "error"):
+            break
+        time.sleep(0.01)
+
+    row = st.get("r1")
+    assert row["status"] == "done"
+    assert row["attempts"] == 3
+    assert len(calls) == 3
+
+
+@requires_redis
+def test_runtime_switches_to_redis_backend(monkeypatch):
+    """``MONTAGE_TASK_BACKEND=redis`` 时 get_store 返回 RedisTaskStore。"""
+    from packages.task_queue import get_store, reset_runtime
+
+    monkeypatch.setenv("MONTAGE_TASK_BACKEND", "redis")
+    monkeypatch.setenv("MONTAGE_REDIS_URL", REDIS_URL)
+    reset_runtime()
+    try:
+        store = get_store()
+        assert isinstance(store, RedisTaskStore)
+        assert store.db_path == f"redis:{REDIS_URL}"
+    finally:
+        reset_runtime()
