@@ -555,6 +555,28 @@ class BeatSyncEngine:
     # 转场类型映射
     TRANSITION_TYPES = ["cut", "fade", "dissolve", "wipe", "flash", "zoom", "blur"]
 
+    @staticmethod
+    def _shot_seconds(shot) -> float:
+        """镜头文件**实际可用画面**的秒数；取不到返回 None（表示放弃约束）"""
+        try:
+            d = float(getattr(shot, "duration", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if d > 0:
+            return d
+        path = getattr(shot, "file_path", None)
+        if path and Path(path).exists():
+            cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                   "-show_entries", "stream=duration",
+                   "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
+            out = subprocess.run(cmd, capture_output=True, text=True).stdout
+            try:
+                v = float((out or "").strip())
+                return v if v > 0 else None
+            except ValueError:
+                return None
+        return None
+
     def sync(
         self,
         shots: List[Shot],
@@ -599,13 +621,26 @@ class BeatSyncEngine:
                 shot.highlight_score, beat.beat_type, style_cfg
             )
 
-            # 时长 = N 拍 * 拍间隔（严格量化）
-            duration = beat_count * beat_interval
-
             # 速度因子：基于高光分数微调（范围 0.8~1.2）
             speed_factor = self._calc_speed(
                 shot.highlight_score, beat.beat_type, style_cfg
             )
+
+            # 画面长度约束（关键）：
+            # 上面的拍数只看歌曲，**不看镜头实际有多少画面**。镜头太短时按拍数渲染，
+            # 画面会早早播完、只能靠渲染期克隆末帧凑时长（实测最坏一段 90% 是静止帧，
+            # 13 段合计约 26%）。这里把拍数压到"画面（按 speed 伸缩后）能撑满的整拍数"；
+            # 0.25 拍是容差（允许 ≤0.12s 的收尾补帧，肉眼不可见）。
+            # 连 1 拍都撑不满的镜头直接跳过，让下一个镜头顶上同一拍。
+            avail = self._shot_seconds(shot)
+            if avail is not None:
+                fit_beats = int(avail / max(0.1, speed_factor) / beat_interval + 0.25)
+                if fit_beats < 1:
+                    continue
+                beat_count = min(beat_count, fit_beats)
+
+            # 时长 = N 拍 * 拍间隔（严格量化）
+            duration = beat_count * beat_interval
 
             # 转场：支持模板系统
             transition_type = self._pick_transition(beat, shot, style, transition_pattern)
@@ -972,6 +1007,9 @@ class VideoRenderer:
             trans_type = getattr(entry, "transition_type", "fade")
             xfade_type = xfade_map.get(trans_type, "fade")
 
+            # xfade 要求转场时长 < 参与叠合的两段画面长度，否则输出退化（画面丢失）
+            trans_dur = max(0.05, min(trans_dur, 0.9 * min(seg_dur[j], accum_dur)))
+
             # 转场起点 = 上一段末尾 - 转场时长（xfade 语义：转场结束时正好落在接缝上）
             offset = accum_dur - trans_dur
             if offset < 0:
@@ -1019,7 +1057,29 @@ class VideoRenderer:
         return str(seg_video)
 
     def _get_duration(self, video_path: str) -> float:
-        """获取视频时长"""
+        """获取**视频流**时长（不是容器时长）
+
+        容器 `format=duration` 是所有流时长的**最大值**。clip 的音频被 `apad`
+        补齐到卡点时长后，音频往往比画面长（实测单段画面差 0.03~1.84s），
+        这时再拿 format 时长当"画面长度"去算 xfade 的 `offset`，就会算出
+        超过真实画面的 offset → xfade 越界、成片视频流被截断。
+        所以这里取 `v:0` 的 stream duration，取不到再退回 format。
+        """
+        cmd = [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            value = float((result.stdout or "").strip())
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+
+        # 退回容器时长
         cmd = [
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
@@ -1081,9 +1141,24 @@ class VideoRenderer:
         scale_filter = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
         if speed != 1.0:
             pts = 1.0 / speed
-            cmd.extend(["-vf", f"setpts={pts}*PTS,{scale_filter}"])
+            vf = f"fps=30,setpts={pts}*PTS,{scale_filter}"
         else:
-            cmd.extend(["-vf", scale_filter])
+            vf = f"fps=30,{scale_filter}"
+
+        # 画面长度保护（关键）：
+        # 卡点时长 `duration` 只由**歌曲**决定（拍数 × 拍间隔），从不看镜头实际有多少画面；
+        # 而 `apad` 只补音频。若不管，这一段就会变成"画面 0.2s + 声音 2.0s"——段内音画不等长，
+        # 后果：① concat demuxer 的 `-c copy` 按流各自拼接，音画逐段漂移；
+        #        ② xfade 的 `offset` 超过真实画面长度 → 越界，成片视频流被截断
+        #          （实测成片只剩 1.53s 画面 / 7.0s 声音）。
+        # 这里用 `tpad` 克隆末帧把画面补足到 duration，使每段严格 音长 == 画长 == duration。
+        src_v = self._get_duration(input_path)
+        eff_v = src_v / speed if speed > 0 else src_v
+        pad = duration - eff_v
+        if pad > 0.02:
+            vf += f",tpad=stop_mode=clone:stop_duration={pad + 0.10:.3f}"
+
+        cmd.extend(["-vf", vf])
 
         cmd.extend(["-map", "0:v:0"])
         if has_audio:
