@@ -179,17 +179,28 @@ class ShotDetector:
             shot_id = video_index * 10000 + i
             shot_path = self.cache_dir / f"shot_{shot_id:05d}.mp4"
 
+            # ⚠️ 必须重编码，不能用 `-c copy`。
+            # 原来写的是 `-ss <start> -i in -to <dur> -c copy`：copy 模式无法丢帧，
+            # ffmpeg 只能从 `<= start` 的**关键帧**开始拷，于是镜头文件的**实际内容**
+            # 比记录的 `start_time` 提前一整个 GOP —— 本片实测中位 -0.77s、最大 -4.3s
+            # （源的关键帧间隔中位 1.2s、最大 2.0s）。后果是「标称上互相分离」的两个
+            # 镜头，实际画面仍大面积重叠；源上同一时刻被最多 4~6 个镜头文件覆盖 →
+            # 成片里看着就是"同一个片段用了 4 次"。
+            # 重编码时 ffmpeg 会 seek 到关键帧后**解码并丢弃**到 start 之前的帧，切点精确。
+            # 另外 `-to` 在"输入 -ss"语境下语义含糊，改用相对时长 `-t`。
             cmd = [
                 "ffmpeg", "-y",
                 "-ss", str(start),
                 "-i", video_path,
-                "-to", str(end - start),
-                "-c", "copy",
+                "-t", str(end - start),
+                "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
                 "-avoid_negative_ts", "make_zero",
                 str(shot_path)
             ]
             try:
-                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                result = subprocess.run(cmd, capture_output=True, timeout=90)
                 if result.returncode != 0 or not shot_path.exists():
                     print(f"  镜头切割失败: shot_{i:04d}")
                     continue
