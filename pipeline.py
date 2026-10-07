@@ -1205,6 +1205,82 @@ class MontagePipeline:
         self._last_bgm_path = ""
         self._last_total_duration = 0.0
 
+    @staticmethod
+    def _interval_gap(a: Shot, b: Shot) -> float:
+        """两个镜头在源时间轴上相隔多少秒（源区间重叠时为负数）"""
+        return max(a.start_time, b.start_time) - min(a.end_time, b.end_time)
+
+    def select_highlight_shots(
+        self,
+        all_shots: List[Shot],
+        max_per_video: int = 15,
+        min_shot_gap: float = 1.0,
+        max_total: int = 50,
+        verbose: bool = True,
+    ) -> List[Shot]:
+        """按源分组挑高光镜头，并保证同一源内入选镜头的**源区间互不相接**。
+
+        原实现（已修）是 `min_gap = 20; if abs(shot.shot_id - last_id) >= min_gap`，
+        有三个毛病，导致成片里出现"重复镜头"：
+          1) 只跟「上一个入选者」比，不跟**所有已选镜头**比。而循环是按分数降序走的，
+             于是 shot2[1.00-2.00] 与 shot4[2.13-3.00] 这种源上紧挨着的镜头，只要各自
+             离"上一个"够远就都能入选 —— 实测 15 个镜头里 9 对源起点差 <2s，
+             id71/75/77 三个还全挤在 32.87~36.37 这 3.5s 窗口里。
+          2) 用「起点差」也不够：id61[26.40-28.43] 与 id62[28.43-29.63] 起点虽差 2.03s，
+             但两段源区间**严丝合缝相接**，成片里就是同一段连续画面出现两次。
+             所以这里比较的是**区间空隙** `max(起点)-min(终点)`，而不是起点差。
+          3) shot_id 差值本身不可靠：shot_id = video_index*10000 + i，而 ShotDetector.detect()
+             会 continue 掉 <0.1s 的短场景，id 并不连续，跨源比较更是毫无意义。
+
+        Args:
+            all_shots: 所有检测到的镜头
+            max_per_video: 每个源最多取多少个
+            min_shot_gap: 同一源内任两个入选镜头源区间之间要空出的秒数；源很长时会按
+                源跨度自适应放大（`span / (max_per_video * 2.5)`）。设为 0 关闭该约束。
+            max_total: 交替排列后最终截取的镜头总数上限
+            verbose: 是否打印每个源的选取情况
+        """
+        video_shots: Dict[str, List[Shot]] = {}
+        for shot in all_shots:
+            key = shot.source_video or "unknown"
+            video_shots.setdefault(key, []).append(shot)
+
+        # 每个源：按分数降序贪心，要求与**所有**已选镜头都拉开 min_sep
+        per_video_lists = []
+        for key, shots in video_shots.items():
+            span = max(s.end_time for s in shots) - min(s.start_time for s in shots)
+            if min_shot_gap and float(min_shot_gap) > 0:
+                # 2.5 是留给贪心的松弛量，保证一般还能选到接近 max_per_video 个
+                min_sep = max(float(min_shot_gap), span / (max_per_video * 2.5))
+            else:
+                min_sep = 0.0  # 显式关闭该约束（回到"尽量多选"，可能出现重复镜头）
+            sorted_group = sorted(shots, key=lambda s: (-s.highlight_score, s.start_time))
+            selected: List[Shot] = []
+            for shot in sorted_group:
+                if len(selected) >= max_per_video:
+                    break
+                if all(self._interval_gap(shot, s) >= min_sep for s in selected):
+                    selected.append(shot)
+            if verbose:
+                print(f"  {Path(key).name}: 取 {len(selected)} 个镜头"
+                      f"（源跨度 {span:.1f}s，最小源区间间隔 {min_sep:.2f}s）")
+            per_video_lists.append(selected)
+
+        # 交替排列不同源的镜头（避免连续同源）
+        balanced_shots: List[Shot] = []
+        max_len = max((len(lst) for lst in per_video_lists), default=0)
+        for i in range(max_len):
+            for lst in per_video_lists:
+                if i < len(lst):
+                    balanced_shots.append(lst[i])
+
+        # 截取上限（保持交替排列，不按分数重新排序）
+        max_shots = min(max_total, len(balanced_shots))
+        if verbose:
+            print(f"  选择 Top {max_shots} 高光镜头（共 {len(all_shots)} 个，"
+                  f"来自 {len(video_shots)} 个视频）")
+        return balanced_shots[:max_shots]
+
     def run(
         self,
         video_paths: List[str],
@@ -1224,6 +1300,7 @@ class MontagePipeline:
         enable_sfx: bool = False,
         narration_audio: str = None,
         narration_duck: bool = True,
+        min_shot_gap: float = 1.0,
     ) -> str:
         """
         运行完整混剪流程
@@ -1245,6 +1322,10 @@ class MontagePipeline:
             enable_sfx: 是否启用音效卡点（按强拍/剪辑点叠加音效）
             narration_audio: 旁白音频路径（有则叠加到成片并自动闪避 BGM）
             narration_duck: 旁白时段是否自动压低 BGM
+            min_shot_gap: 同一源内任两个入选镜头的**源区间之间**要空出的秒数（默认 1.0），
+                用于避免近邻镜头造成的「重复镜头」观感；源很长时会按源跨度自适应放大。
+                调大可进一步减少重复（本片实测：1.0→13 镜头、2.5→12、3.0→10），
+                设 0 可关闭该约束（回到「尽量多选」的旧行为，可能出现重复镜头）。
 
         Returns:
             输出文件路径
@@ -1285,42 +1366,12 @@ class MontagePipeline:
 
         # Step 5: 卡点同步
         print("\n[5/6] 卡点同步...")
-        # 按 source_video 分组，每视频最多取 top N 个镜头（带最小间隔）
+        # 按 source_video 分组，每视频最多取 top N 个镜头（带源区间间隔约束）
         max_per_video = 15
-        min_gap = 20  # 同一视频相邻镜头的最小间隔（确保视觉差异）
-        video_shots: Dict[str, List[Shot]] = {}
-        for shot in all_shots:
-            key = shot.source_video or "unknown"
-            if key not in video_shots:
-                video_shots[key] = []
-            video_shots[key].append(shot)
-
-        # 每个视频取 top max_per_video 个高分镜头（带间隔约束）
-        per_video_lists = []
-        for key, shots in video_shots.items():
-            sorted_group = sorted(shots, key=lambda s: s.highlight_score, reverse=True)
-            selected = []
-            last_id = -999
-            for shot in sorted_group:
-                if len(selected) >= max_per_video:
-                    break
-                if abs(shot.shot_id - last_id) >= min_gap:
-                    selected.append(shot)
-                    last_id = shot.shot_id
-            per_video_lists.append(selected)
-
-        # 交替排列不同视频的镜头（避免连续同源）
-        balanced_shots = []
-        max_len = max(len(lst) for lst in per_video_lists) if per_video_lists else 0
-        for i in range(max_len):
-            for lst in per_video_lists:
-                if i < len(lst):
-                    balanced_shots.append(lst[i])
-
-        # 截取 top 50（保持交替排列，不按分数重新排序）
-        max_shots = min(50, len(balanced_shots))
-        top_shots = balanced_shots[:max_shots]
-        print(f"  选择 Top {max_shots} 高光镜头（共 {len(all_shots)} 个，来自 {len(video_shots)} 个视频）")
+        top_shots = self.select_highlight_shots(
+            all_shots, max_per_video=max_per_video, min_shot_gap=min_shot_gap)
+        if not top_shots:
+            raise ValueError("没有可用的高光镜头")
         timeline = self.sync_engine.sync(top_shots, beat_analysis.beats, style, transition_pattern)
 
         if not timeline:
@@ -1459,6 +1510,9 @@ def main():
     parser.add_argument("--output", default="final.mp4", help="输出文件名")
     parser.add_argument("--threshold", type=float, default=0.2,
                         help="镜头检测灵敏度 0.01~1.0，越小切得越细（默认 0.2，混剪推荐 0.1~0.2）")
+    parser.add_argument("--min-shot-gap", type=float, default=1.0,
+                        help="同一源内任两个入选镜头的源区间之间要空出的秒数（默认 1.0）；"
+                             "调大可减少重复镜头，0 表示关闭该约束")
     # 新增功能参数
     parser.add_argument("--prompt", type=str, help="自然语言描述，如 '做一个30秒的漫威高燃混剪'")
     parser.add_argument("--subtitles", type=str, default="none",
@@ -1785,6 +1839,7 @@ def main():
         enable_sfx=args.sfx,
         narration_audio=narration_audio,
         narration_duck=not args.no_duck,
+        min_shot_gap=args.min_shot_gap,
     )
 
     # 后处理：视频增强（只处理 pipeline.run() 未处理的项目）
