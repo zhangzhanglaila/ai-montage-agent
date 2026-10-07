@@ -1272,6 +1272,10 @@ class VideoRenderer:
         subprocess.run(cmd, capture_output=True, check=True)
 
 
+# 画面级去重指纹缓存：key = (路径, mtime_ns, 大小) -> 8fps/16x16 灰度指纹序列
+_VISUAL_SIG_CACHE: Dict[Any, Any] = {}
+
+
 class MontagePipeline:
     """混剪 Pipeline - 真正的端到端流程"""
 
@@ -1296,12 +1300,134 @@ class MontagePipeline:
         """两个镜头在源时间轴上相隔多少秒（源区间重叠时为负数）"""
         return max(a.start_time, b.start_time) - min(a.end_time, b.end_time)
 
+    # ---- 画面级去重（指纹参数）----
+    # 分辨率取 16x16 是实测选出来的：8x8 太粗，细高频纹理（如密棋盘）降采样后会
+    # 平均成同一种灰而误判（实测合成素材非重复对 MSE 只有 9.9）；16x16 下同一组
+    # 素材升到 1658。真实素材实测：重复对 MSE 0~37，最接近的非重复对 1319 → 阈值 200
+    # 落在两者几何中点附近，上下各留 5 倍余量。
+    VISUAL_SIG_FPS = 8      # 指纹采样率
+    VISUAL_SIG_SIZE = 16    # 每帧缩到 16x16 灰度
+    VISUAL_WIN = 4          # 比对窗口 0.5s
+    VISUAL_DEFAULT_THRESHOLD = 200.0
+
+    @classmethod
+    def _visual_signature(cls, path: str) -> np.ndarray:
+        """把镜头抽成 8fps / 16x16 灰度的指纹序列（每帧 256 维）。
+
+        用于**画面级**去重：素材片自带的片头回顾、闪回会让同一画面在源里出现两次，
+        此时两个镜头的**源区间毫无重叠**，区间去重完全抓不到，只能比对画面内容。
+        结果按 (路径, mtime, 大小) 缓存，重复调用不重复解码。
+        """
+        try:
+            st = os.stat(path)
+            key = (str(path), int(st.st_mtime_ns), int(st.st_size))
+        except OSError:
+            key = (str(path), 0, 0)
+        cached = _VISUAL_SIG_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        size = cls.VISUAL_SIG_SIZE
+        cmd = [
+            "ffmpeg", "-v", "error", "-i", str(path),
+            "-vf", f"fps={cls.VISUAL_SIG_FPS},scale={size}:{size}",
+            "-f", "rawvideo", "-pix_fmt", "gray", "-",
+        ]
+        out = subprocess.run(cmd, capture_output=True).stdout
+        px = size * size
+        a = np.frombuffer(out, dtype=np.uint8).astype(np.float32)
+        n = a.size // px
+        sig = a[:n * px].reshape(n, px) if n else np.zeros((0, px), np.float32)
+        _VISUAL_SIG_CACHE[key] = sig
+        return sig
+
+    @classmethod
+    def _visual_shared_window_mse(cls, a: np.ndarray, b: np.ndarray) -> float:
+        """两段指纹**最相似的 0.5s 窗口**的 MSE；无法比较时返回 inf。
+
+        用"共享某个子窗口"而不是"整段前缀比对"：源里的重复区间往往只覆盖镜头的一部分
+        （实测源 9.25-10.38s 重复，而选中的镜头是 9.27-10.64s，尾部 0.26s 并不重复），
+        整段比对会被不重复的尾部拉高误差而漏判。
+        近纯色/黑场窗口直接跳过 —— 它们会和任何黑场"匹配"（MSE 0.0 的假阳性）。
+        """
+        win = cls.VISUAL_WIN
+        if a.shape[0] < win or b.shape[0] < win:
+            return float("inf")
+        Wa = np.lib.stride_tricks.sliding_window_view(a, win, axis=0)
+        Wb = np.lib.stride_tricks.sliding_window_view(b, win, axis=0)
+        best = float("inf")
+        step = max(1, win // 2)
+        for i in range(0, Wa.shape[0], step):
+            ai = Wa[i]
+            if float(ai.std()) < 2.0:
+                continue
+            best = min(best, float(((Wb - ai) ** 2).mean(axis=(1, 2)).min()))
+        return best
+
+    def drop_visual_duplicates(
+        self,
+        shots: List[Shot],
+        threshold: float = None,
+        verbose: bool = True,
+    ) -> List[Shot]:
+        """丢掉"画面内容与已选镜头重复"的镜头（跨源、跨源时间点都管）。
+
+        动机（真实事故）：素材片自带片头回顾。实测该片源里有 3 处、合计 4.0s
+        （占源 9.4%）的画面重复出现，例如源 9.25-10.38s == 38.88-40.00s（MSE 0.0）。
+        选中 9.27s 与 38.90s 两个镜头时，它们的源区间毫无重叠、区间去重全部放行，
+        但成片里就是同一段画面出现两次 —— 用户看到的就是"一个片段用了 4 次"。
+        这里按画面内容比对，同一画面只保留高光分最高的一个。
+
+        Args:
+            shots: 候选镜头
+            threshold: 指纹 MSE 阈值（16x16 灰度尺度，默认 200）；同一画面实测 0~37，
+                不同画面最接近的一对实测 1319。None 用默认值，<=0 关闭。
+        """
+        if threshold is None:
+            threshold = self.VISUAL_DEFAULT_THRESHOLD
+        if not shots or float(threshold) <= 0:
+            return list(shots)
+
+        kept: List[Shot] = []
+        sigs: List[np.ndarray] = []
+        dropped = []
+        for shot in sorted(shots, key=lambda s: (-s.highlight_score, s.start_time)):
+            path = shot.file_path or ""
+            if not path or not Path(path).exists():
+                kept.append(shot)
+                sigs.append(np.zeros((0, self.VISUAL_SIG_SIZE ** 2), np.float32))
+                continue
+            sig = self._visual_signature(path)
+            dup_of = None
+            for k, ksig in zip(kept, sigs):
+                m = self._visual_shared_window_mse(sig, ksig)
+                if m < threshold:
+                    dup_of = (k, m)
+                    break
+            if dup_of is None:
+                kept.append(shot)
+                sigs.append(sig)
+            else:
+                dropped.append((shot, dup_of[0], dup_of[1]))
+
+        if verbose:
+            if dropped:
+                print(f"  画面级去重：丢掉 {len(dropped)} 个与已选镜头画面重复的镜头")
+                for s, k, m in dropped:
+                    print(f"    shot_{s.shot_id:05d}(源{s.start_time:.2f}s) 与 "
+                          f"shot_{k.shot_id:05d}(源{k.start_time:.2f}s) 画面重复"
+                          f"（MSE {m:.1f}）")
+            else:
+                print("  画面级去重：未发现画面重复的镜头")
+        return kept
+
     def select_highlight_shots(
         self,
         all_shots: List[Shot],
         max_per_video: int = 15,
         min_shot_gap: float = 1.0,
         max_total: int = 50,
+        visual_dedup_threshold: float = None,
         verbose: bool = True,
     ) -> List[Shot]:
         """按源分组挑高光镜头，并保证同一源内入选镜头的**源区间互不相接**。
@@ -1324,8 +1450,19 @@ class MontagePipeline:
             min_shot_gap: 同一源内任两个入选镜头源区间之间要空出的秒数；源很长时会按
                 源跨度自适应放大（`span / (max_per_video * 2.5)`）。设为 0 关闭该约束。
             max_total: 交替排列后最终截取的镜头总数上限
+            visual_dedup_threshold: 画面级去重的指纹 MSE 阈值（<=0 关闭）
             verbose: 是否打印每个源的选取情况
         """
+        # 画面级去重（跨源、跨源时间点）：必须放在区间贪心**之前**。
+        # 素材片自带的片头回顾/闪回会让同一画面在源里出现两次，此时区间空隙约束
+        # 全部放行（区间毫无重叠），只能按画面内容剔重；先剔再贪心，被剔掉的镜头
+        # 会由"下一个最优"补位，不会白白少一个镜头。
+        if visual_dedup_threshold is None:
+            visual_dedup_threshold = self.VISUAL_DEFAULT_THRESHOLD
+        if all_shots and float(visual_dedup_threshold) > 0:
+            all_shots = self.drop_visual_duplicates(
+                list(all_shots), threshold=float(visual_dedup_threshold), verbose=verbose)
+
         video_shots: Dict[str, List[Shot]] = {}
         for shot in all_shots:
             key = shot.source_video or "unknown"
@@ -1387,6 +1524,7 @@ class MontagePipeline:
         narration_audio: str = None,
         narration_duck: bool = True,
         min_shot_gap: float = 1.0,
+        visual_dedup_threshold: float = None,
     ) -> str:
         """
         运行完整混剪流程
@@ -1412,6 +1550,9 @@ class MontagePipeline:
                 用于避免近邻镜头造成的「重复镜头」观感；源很长时会按源跨度自适应放大。
                 调大可进一步减少重复（本片实测：1.0→13 镜头、2.5→12、3.0→10），
                 设 0 可关闭该约束（回到「尽量多选」的旧行为，可能出现重复镜头）。
+            visual_dedup_threshold: 画面级去重的指纹 MSE 阈值（<=0 关闭）。素材片自带
+                片头回顾/闪回时，同一画面在源里出现两次且源区间毫无重叠，区间约束抓不到；
+                默认 200（16x16 灰度尺度，同一画面实测 0~37，不同画面最接近的一对 1319）。
 
         Returns:
             输出文件路径
@@ -1455,7 +1596,8 @@ class MontagePipeline:
         # 按 source_video 分组，每视频最多取 top N 个镜头（带源区间间隔约束）
         max_per_video = 15
         top_shots = self.select_highlight_shots(
-            all_shots, max_per_video=max_per_video, min_shot_gap=min_shot_gap)
+            all_shots, max_per_video=max_per_video, min_shot_gap=min_shot_gap,
+            visual_dedup_threshold=visual_dedup_threshold)
         if not top_shots:
             raise ValueError("没有可用的高光镜头")
         timeline = self.sync_engine.sync(top_shots, beat_analysis.beats, style, transition_pattern)
@@ -1599,6 +1741,11 @@ def main():
     parser.add_argument("--min-shot-gap", type=float, default=1.0,
                         help="同一源内任两个入选镜头的源区间之间要空出的秒数（默认 1.0）；"
                              "调大可减少重复镜头，0 表示关闭该约束")
+    parser.add_argument("--visual-dedup-threshold", type=float, default=None,
+                        help="画面级去重的指纹 MSE 阈值（默认 200，16x16 灰度尺度）；"
+                             "素材片自带片头回顾/闪回时，同一画面在源里出现两次且源区间不重叠，"
+                             "只能按画面内容去重；同一画面实测 0~37、不同画面最接近的一对 1319；"
+                             "0 表示关闭")
     # 新增功能参数
     parser.add_argument("--prompt", type=str, help="自然语言描述，如 '做一个30秒的漫威高燃混剪'")
     parser.add_argument("--subtitles", type=str, default="none",
@@ -1926,6 +2073,7 @@ def main():
         narration_audio=narration_audio,
         narration_duck=not args.no_duck,
         min_shot_gap=args.min_shot_gap,
+        visual_dedup_threshold=args.visual_dedup_threshold,
     )
 
     # 后处理：视频增强（只处理 pipeline.run() 未处理的项目）
