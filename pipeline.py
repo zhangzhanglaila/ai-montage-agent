@@ -859,16 +859,25 @@ class VideoRenderer:
         durations = [self._get_duration(p) for p in video_paths]
         W, H = 1280, 720
 
-        # 统一分辨率和帧率
+        # 统一分辨率和帧率（**保留音轨**：转场段的 acrossfade 需要它）
         scaled_files = []
         for i, path in enumerate(video_paths):
             scaled = self.output_dir / f"scaled_{i}.mp4"
-            cmd = [
-                "ffmpeg", "-y", "-i", path,
+            cmd = ["ffmpeg", "-y", "-i", path]
+            if self._has_audio(path):
+                maps = ["-map", "0:v:0", "-map", "0:a:0"]
+            else:
+                # 源无音轨时补静音轨，保证各段流结构一致（concat -c copy 才不会错位）
+                cmd.extend(["-f", "lavfi", "-i",
+                            "anullsrc=channel_layout=stereo:sample_rate=44100"])
+                maps = ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+            cmd.extend([
                 "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30",
-                "-c:v", "libx264", "-crf", "23", "-preset", "fast", "-an",
+                *maps,
+                "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                 str(scaled)
-            ]
+            ])
             subprocess.run(cmd, capture_output=True, check=True)
             scaled_files.append(str(scaled))
 
@@ -912,12 +921,13 @@ class VideoRenderer:
         return result_path
 
     def _xfade_segment(self, scaled_files: List[str], indices: List[int], durations: List[float], entries: List[TimelineEntry]) -> str:
-        """对一组连续非-cut clips 应用 xfade 链"""
+        """对一组连续非-cut clips 应用 xfade 链（**视频 xfade + 音频 acrossfade 同步缩短**）"""
         seg_dur = [durations[i] for i in indices]
         filter_parts = []
-        accum_dur = seg_dur[0]
-        total_trans = 0.0
+        accum_dur = seg_dur[0]      # 视频流累计时长（xfade 语义：输出 = offset + 后段时长）
+        accum_audio = seg_dur[0]    # 音频流累计时长（acrossfade 语义：输出 = 前段 + 后段 - d）
         current_label = "[0:v]"
+        current_audio = "[0:a]"
 
         xfade_map = {
             "fade": "fade", "dissolve": "dissolve",
@@ -951,19 +961,31 @@ class VideoRenderer:
             trans_type = getattr(entry, "transition_type", "fade")
             xfade_type = xfade_map.get(trans_type, "fade")
 
-            offset = sum(seg_dur[:j]) - total_trans
-            offset = min(offset, accum_dur - trans_dur - 0.1)
+            # 转场起点 = 上一段末尾 - 转场时长（xfade 语义：转场结束时正好落在接缝上）
+            offset = accum_dur - trans_dur
             if offset < 0:
                 offset = max(0.1, accum_dur * 0.5)
 
-            total_trans += trans_dur
-            accum_dur = accum_dur - trans_dur + seg_dur[j]
+            # 音频交叉淡化时长不得 ≥ 任一被叠合的片段长度（acrossfade 会报错）
+            fade_d = min(trans_dur, 0.9 * min(seg_dur[j], accum_audio))
+            fade_d = max(0.05, fade_d)
+
+            accum_dur = offset + seg_dur[j]
+            accum_audio = accum_audio + seg_dur[j] - fade_d
 
             filter_parts.append(
                 f"{current_label}[{j}:v]xfade=transition={xfade_type}:"
                 f"duration={trans_dur}:offset={offset:.3f}[out{j}]"
             )
+            filter_parts.append(
+                f"{current_audio}[{j}:a]acrossfade=d={fade_d:.3f}:c1=tri:c2=tri[a{j}]"
+            )
             current_label = f"[out{j}]"
+            current_audio = f"[a{j}]"
+
+        # 音频可能因转场误差比画面略长/略短：apad 补尾 + 输出 -t 精确对齐，避免
+        # concat demuxer 按流各自拼接时音画逐段漂移
+        filter_parts.append(f"{current_audio}apad[aout]")
 
         seg_video = self.output_dir / f"xfade_seg_{indices[0]}.mp4"
         cmd = ["ffmpeg", "-y"]
@@ -972,7 +994,10 @@ class VideoRenderer:
         cmd.extend([
             "-filter_complex", ";".join(filter_parts),
             "-map", current_label,
+            "-map", "[aout]",
+            "-t", f"{accum_dur:.3f}",
             "-c:v", "libx264", "-crf", "23", "-preset", "medium",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             str(seg_video)
         ])
 
@@ -997,19 +1022,73 @@ class VideoRenderer:
             print(f"  [警告] 无法获取时长: {video_path}，使用默认值 2.0s")
             return 2.0
 
+    @staticmethod
+    def _has_audio(path: str) -> bool:
+        """探测输入是否含音轨。
+
+        用途：决定要不要补一条静音轨。**所有 clip 的流结构必须一致**，
+        否则 concat demuxer 的 `-c copy` 会因为某段缺音轨而错位/失败。
+        """
+        cmd = [
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=index", "-of", "csv=p=0", path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return bool((result.stdout or "").strip())
+
+    @staticmethod
+    def _atempo_chain(speed: float) -> str:
+        """把任意倍速拆成多级 atempo（单级只支持 [0.5, 2.0]，超出必须串联）"""
+        speed = max(0.1, float(speed))
+        parts: List[str] = []
+        s = speed
+        while s > 2.0:
+            parts.append("atempo=2.0")
+            s /= 2.0
+        while s < 0.5:
+            parts.append("atempo=0.5")
+            s /= 0.5
+        parts.append(f"atempo={s:.6f}")
+        return ",".join(parts)
+
     def _prepare_clip(self, input_path: str, output_path: str, duration: float, speed: float = 1.0, width: int = 1280, height: int = 720):
-        """截取 + 调整速度 + 统一分辨率（合并为一次 FFmpeg 调用）"""
-        cmd = ["ffmpeg", "-y", "-i", input_path, "-t", str(duration)]
+        """截取 + 调整速度 + 统一分辨率（合并为一次 FFmpeg 调用，**保留原音轨**）
+
+        原实现两个分支都带 `-an`，把原音轨丢在第一步 → 后续 concat 出的视频没有音轨
+        → Step3 混音的 `[0:a]` 不存在、静默回退成「纯 BGM」，原片人声/现场声永远进不了成片。
+        现改为：
+        - 源有声 → map 原音轨；变速时用 `atempo`（多级串联）同步变速，`apad` 补齐到画面长度；
+        - 源无声 → 用 `anullsrc` 补一条静音轨，保证所有 clip 流结构一致。
+        """
+        has_audio = self._has_audio(input_path)
+        cmd = ["ffmpeg", "-y", "-i", input_path]
+        if not has_audio:
+            cmd.extend(["-f", "lavfi", "-i",
+                        "anullsrc=channel_layout=stereo:sample_rate=44100"])
 
         # 统一分辨率 + 可选变速
         scale_filter = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
         if speed != 1.0:
             pts = 1.0 / speed
-            cmd.extend(["-vf", f"setpts={pts}*PTS,{scale_filter}", "-an"])
+            cmd.extend(["-vf", f"setpts={pts}*PTS,{scale_filter}"])
         else:
-            cmd.extend(["-vf", scale_filter, "-an"])
+            cmd.extend(["-vf", scale_filter])
 
-        cmd.extend(["-c:v", "libx264", "-crf", "23", "-preset", "fast", output_path])
+        cmd.extend(["-map", "0:v:0"])
+        if has_audio:
+            cmd.extend(["-map", "0:a:0"])
+            af = f"{self._atempo_chain(speed)},apad" if speed != 1.0 else "apad"
+            cmd.extend(["-af", af])
+        else:
+            cmd.extend(["-map", "1:a:0"])
+
+        cmd.extend([
+            "-t", str(duration),
+            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            output_path,
+        ])
         try:
             subprocess.run(cmd, capture_output=True, check=True, timeout=60)
         except subprocess.TimeoutExpired:

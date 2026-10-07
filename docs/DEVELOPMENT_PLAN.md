@@ -270,6 +270,34 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 |------|--------|------|
 | 静音/异常 BGM 导致 loudnorm 归一化崩溃（tests 长期失败） | `a59fd08` | 2026-10-04 |
 | 单一 xfade 段时清理误删结果文件（tests 随机失败） | `6282c81` | 2026-10-04 |
+| **转场/拼接渲染丢失原片音轨**（成片永远只有纯 BGM，无原声） | `<PENDING>` | 2026-10-07 |
+
+#### 修复记录：转场/拼接渲染丢失原片音轨（2026-10-07）
+- **现象**：成片全程只有 BGM，听不到原片人声/现场声；日志静默打印
+  「混音失败（可能无原音轨），使用纯 BGM」。
+- **根因（比预估更靠前）**：`_prepare_clip()` 两个分支都带 `-an`，**在第一步就把原音轨丢了**，
+  所以无论走 cut 路径还是转场路径，底片都没有音轨 → Step3 混音的 `[0:a]` 不存在 →
+  回退纯 BGM。`_render_with_transitions()` 的 `scaled_*.mp4` 又叠了一层 `-an`，
+  且 xfade 段只 map 了视频流。
+- **修复**（`pipeline.py`，`VideoRenderer`）：
+  1. `_prepare_clip`：保留原音轨；变速改用 **多级 `atempo` 串联**（`_atempo_chain`，单级只支持
+     [0.5,2.0]）同步变速、`apad` 补齐到画面长度；源无音轨时用 `anullsrc` **补静音轨**，
+     保证所有 clip 流结构一致（否则 concat demuxer 的 `-c copy` 会错位）。
+  2. `_render_with_transitions` 的 `scaled_*.mp4`：去掉 `-an`，统一 `aac/44100/立体声`。
+  3. `_xfade_segment`：新增 `acrossfade` 音频链（`d` 取 `min(转场时长, 0.9×被叠合片长)`，
+     避免 acrossfade 报错），末尾 `apad` + 输出 `-t <视频累计时长>` 精确对齐，
+     防止 concat demuxer 按流各自拼接造成音画逐段漂移。
+  4. 顺带修 xfade 的 `offset`：原 `min(offset, accum_dur-trans_dur-0.1)` 因 `offset` 恒等于
+     `accum_dur`，**每个转场都被无条件提前 0.1s**，成片比解析值短 `0.1s×转场数`。
+     改为 `offset = accum_dur - trans_dur`（转场结束正好落在接缝）。
+- **实测**（真实素材 `output/test_montage8.mp4`，转场渲染底片 vs 原片同窗口分频段）：
+  低 −13.6/−12.3、中 −18.2/−16.1、高 −25.8/−23.4 dB —— 频段差 ≤2.4dB，原声原样流过。
+  用**数字静音**当 BGM 走完整 `render()`，成片 max −16.0dB、高频 −46.2dB
+  （若回退纯 BGM 必为 −91dB）→ 证明成片声音确实来自原片。真实 CLI 跑 calm（全转场）
+  风格，日志无任何「混音失败 / xfade segment 失败」回退信息。
+- **门禁**：`pytest` **42 passed**（无 skip）；新增 `scripts/smoke_transition_audio.py`
+  **18 项可证伪断言全过**（含 FFT 主频检出 440/1200Hz、反证静音、变速音画等长、
+  fade 成片时长=3.5s 解析值、音画时长差 <0.1s）；既有 sfx/voice/cover/mixer/speed 冒烟无回归。
 
 #### F1.5 / F1.1 / F1.2 实现记录
 - **F1.5**：新增 `packages/subtitle_engine/src/burn_pipeline.py::transcribe_and_burn`，
