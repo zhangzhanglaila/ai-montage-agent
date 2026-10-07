@@ -16,8 +16,9 @@
 | 镜头检测 | FFmpeg scene detect | `pipeline.py: ShotDetector(26)` |
 | 高光评分 | 5 维评分 | `pipeline.py: HighlightScorer(329)` |
 | 节拍分析 | librosa BPM/强弱拍/高潮 | `pipeline.py: BeatAnalyzer(214)` |
-| 卡点同步 | 镜头对齐节拍 + 变速 | `pipeline.py: BeatSyncEngine(427)` |
-| 渲染 | FFmpeg 拼接/转场/混音 | `pipeline.py: VideoRenderer(630)` |
+| 卡点同步 | 镜头对齐节拍 + 变速 + **拍数受可用画面长度约束** | `pipeline.py: BeatSyncEngine(552)` |
+| 镜头选择 | 高光排序 + **源区间空隙约束** + **画面级去重** | `pipeline.py: MontagePipeline.select_highlight_shots()` |
+| 渲染 | FFmpeg 拼接/转场/混音（**保留原音轨、每段音画等长**） | `pipeline.py: VideoRenderer(755)` |
 | 转场 | 10 种预设 + 30+ FFmpeg 效果 | `packages/montage_engine/src/` |
 | 素材爬取 | B站/YouTube/台词/BGM | `packages/video_crawler/src/` |
 | 视频增强 | 防抖/降噪/调色/裁帧/闪避/色彩统一 | `packages/video_enhancement/src/` |
@@ -30,10 +31,16 @@
 
 | 位置 | 说明 |
 |------|------|
-| `pipeline.py: MontagePipeline.run()` L1117–1177 | 渲染后处理链：色彩协调 → 渲染 → 对话闪避 → 调色 → 竖屏裁切 |
-| `pipeline.py: main()` L1347–1358 | CLI 后处理链：`_apply_enhancement` → `_apply_subtitles` → `_export_timeline` |
-| `packages/webui/src/app.py: _run_montage_task()` L33 | WebUI 后台任务入口，新功能需同步加参数 |
+| `pipeline.py: MontagePipeline.run()` | 渲染后处理链：色彩协调 → 渲染 → 对话闪避 → 调色 → 竖屏裁切 → 音效卡点 → 配音旁白 |
+| `pipeline.py: MontagePipeline.select_highlight_shots()` | **镜头选择**（第 5 步）：区间空隙约束 → 画面级去重 → 交替排列，新去重策略挂这里 |
+| `pipeline.py: BeatSyncEngine.sync()` | 镜头↔节拍量化，画面长度约束（检查拍数来源）与变速都在这 |
+| `pipeline.py: main()` | CLI 后处理链：`_apply_enhancement` → `_apply_subtitles` → `_export_timeline` |
+| `packages/webui/src/app.py: _run_montage_task()` | WebUI 后台任务入口，新功能需同步加参数 |
 | `packages/core_types/models.py` | 共享数据类；`Shot.embedding` 字段**已预留** |
+
+> ⚠️ **加新 CLI 参数时**记得四件套一起改：`argparse` 定义 → `parser.parse_args()` 透传 →
+> `MontagePipeline.run()` 形参 → `select_highlight_shots()`/`BeatSyncEngine.sync()` 消费点。
+> `--min-shot-gap` / `--visual-dedup-threshold` 就是按这个链路接的。
 
 ### 已发现的现存小问题（顺手修）
 
@@ -272,6 +279,9 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 | 单一 xfade 段时清理误删结果文件（tests 随机失败） | `6282c81` | 2026-10-04 |
 | **转场/拼接渲染丢失原片音轨**（成片永远只有纯 BGM，无原声） | `519e382` | 2026-10-07 |
 | **镜头选择产生重复镜头**（约束只比"上一个"、且用起点差） | `5df4807` | 2026-10-07 |
+| **镜头切割偏移一整个 GOP**（`-c copy` 只能从关键帧起切，实际内容比标称早） | `8c46c23` | 2026-10-07 |
+| **成片视频流被截断**（每段音画不等长 + xfade offset 越界，画面 1.5s / 声音 7.0s） | `a9fb817` | 2026-10-07 |
+| **素材自带回顾导致的画面重复**（区间去重原理上抓不到，需画面级去重） | `d83e9fd` | 2026-10-07 |
 
 #### 修复记录：镜头选择产生重复镜头（2026-10-07）
 - **现象**：成片里反复出现"同一段连续画面"，看着像重复镜头。
@@ -336,6 +346,97 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 - **门禁**：`pytest` **42 passed**（无 skip）；新增 `scripts/smoke_transition_audio.py`
   **18 项可证伪断言全过**（含 FFT 主频检出 440/1200Hz、反证静音、变速音画等长、
   fade 成片时长=3.5s 解析值、音画时长差 <0.1s）；既有 sfx/voice/cover/mixer/speed 冒烟无回归。
+
+#### 修复记录：镜头切割偏移一整个 GOP（2026-10-07，`8c46c23`）
+- **现象**：用户连续两次反馈「还是一直有重复镜头」「还是有一个片段用了 4 次」。
+- **根因**：`ShotDetector.detect()` 切割用 `-ss <start> -i SRC -to <dur> -c copy`。
+  **copy 模式无法丢帧**，ffmpeg 只能从 `<= start` 的**关键帧**开始拷，于是镜头文件的
+  **实际内容**比记录的 `start_time` 提前一整个 GOP。本片实测：源关键帧间隔
+  中位 1.20s / 最大 2.00s，67 个镜头里 **62 个**实际起点早于标称（中位 −0.59s，最大 −4.33s）。
+  后果：**标称区间互不重叠、实际画面却大面积重叠**，源上同一时刻被最多 4~6 个镜头文件覆盖
+  —— 这才是"同一个片段用了 4 次"的直接来源。区间去重（`5df4807`）修不了它，
+  因为区间本来就是分开的。
+- **修复**：改成精确重编码 `-ss <start> -i SRC -t <dur> -c:v libx264 -crf 18 -preset veryfast
+  -pix_fmt yuv420p -c:a aac -b:a 192k`。重编码时 ffmpeg 会 seek 到关键帧后**解码并丢弃**
+  start 之前的帧，切点精确。`-to` 在"输入 -ss"语境下语义含糊，改用相对时长 `-t`。超时 30s→90s。
+- **取证方法（可复现，值得沉淀）**：把镜头文件与源都抽成 `fps=10, scale=96:54, rgb24` 的
+  原始帧序列，用**整段序列滑窗**取最小 MSE，定位镜头内容在源上的**真实位置**。
+  单帧定位不可用——黑场/淡入帧会和任何位置 err=0.0 假匹配（曾出现 28s 的荒谬偏移）。
+  音频互相关也不可靠（极短片段下 correlation >1，中位偏移 −0.525s 但离群值满天飞）。
+- **实测**（同一批 42 个长镜头）：实际起点与标称相差 ≤0.15s 的 **7/42 → 38/42**；
+  源上被 ≥4 个镜头覆盖的时刻 **5 → 0**。成片入选的 13 个镜头：0 对重叠、最大覆盖 1。
+- **门禁**：新增 `scripts/smoke_shot_cut_accuracy.py`，**自包含 + 31 项断言**：
+  A 每个镜头实际内容起点 == 标称 start（≤1.5 帧，31/31）；
+  D 文件时长 == 标称时长（31/31）；**B 反证**：老 `-c copy` 命令在**同一区间**上偏移 −1.00s；
+  C 源时间轴上无时刻被 ≥2 个镜头实际覆盖。
+  ⚠️ 夹具必须带**空间纹理**（用每块相位不同的棋盘）：纯色块的 `scene` 分数 <0.2，
+  默认阈值下检测不到切点（第一版只检出 6 个、全落在关键帧上）。
+  `pytest` 42 passed。
+
+#### 修复记录：成片视频流被截断（2026-10-07，`a9fb817`）
+- **现象**：真实端到端跑完 exit 0、日志正常，但 `output/nodup_final.mp4` 只有
+  **画面 1.53s（46 帧）/ 声音 7.01s** —— 后面全是"只有声音没有画面"。
+  （更早的 `demo_orig_audio.mp4` 也是 画面 6.37s / 声音 10.50s，说明是长期存在的问题。）
+- **根因（三个缺陷叠加）**：
+  1. 卡点时长 `duration = beat_count × beat_interval` **只由歌曲决定，从不看镜头实际有多少
+     画面**；而 `apad` 只补音频。短镜头那一段就成了"画面 0.3s + 声音 1.5s"。
+  2. `_get_duration()` 取的是容器 `format=duration`（= **所有流时长的最大值**）。音频被补齐后
+     它代表的是**音频**长度，却被拿去算 xfade 的几何 → `offset` 超过真实画面长度 → 输出退化。
+  3. `trans_dur` 没有和参与叠合的两段画面长度做约束。
+- **修复**（`pipeline.py`）：
+  1. `_prepare_clip`：用 `tpad=stop_mode=clone` **克隆末帧**把画面补足到 `duration`，
+     使每段严格 音长 == 画长 == duration（顺带 `fps=30` 与 xfade 路径统一帧率）。
+  2. `_get_duration`：优先取 `v:0` 的 stream duration，取不到才退回 `format=duration`。
+  3. `_xfade_segment`：加 `trans_dur <= 0.9 × min(seg_dur[j], accum_dur)` 保护。
+  4. `BeatSyncEngine.sync` 加画面长度约束：拍数压到"画面（按 speed 伸缩后）能撑满的整拍数"
+     （0.25 拍容差 ≈0.12s），连 1 拍都撑不满的镜头跳过、让下一个镜头顶上。
+     否则冻帧占比实测可达 **26%**（最坏一段 90% 是静止帧），修复后降到 **~2.5%**。
+     注意：这条必须在**算 speed 之后**执行（画面伸缩量取决于 speed）。
+- **实测**（同一素材 / calm / 13 入选）：
+  | | 画面 | 声音 | 单段音画差 |
+  |---|---|---|---|
+  | 修复前 | **1.53s**（46 帧） | 7.01s | 最多 1.84s |
+  | 修复后 | **11.30s**（341 帧） | 11.33s | **0/12 段 >0.032s（一帧）** |
+- **门禁**：新增 `scripts/smoke_av_length.py`，**自包含 + 8 项断言**：补帧到请求时长、
+  clip 音画等长、clip 仍带音轨、**负对照**（老滤镜链 画面 0.30s / 声音 1.50s）、
+  `_get_duration` 返回视频流时长、拍数不超可用画面、0.20s 镜头被跳过、端到端成片音画等长。
+  `pytest` 42 passed。
+
+#### 功能记录：画面级去重（2026-10-07，`d83e9fd`）
+- **动机**：修完上面两条后，"重复镜头"仍能复现。最后查到根因**在素材本身**：
+  `output/test_montage8.mp4` 里同一段画面出现了多次 —— 源 `9.25-10.38s == 38.88-40.00s`
+  （逐像素 MSE **0.0**），源 `1.0s ≈ 3.0s ≈ 22.6s ≈ 31.4s`，合计 **4.0s（占源 9.4%）**。
+  选中这些镜头时它们的**源区间毫无重叠**，区间空隙约束全部放行 —— 这个只能比对
+  **画面内容**才能发现，属于原理性的能力缺口（不是 bug）。
+- **实现**：
+  - `_visual_signature()`：镜头抽成 `8fps / 16x16 灰度` 指纹（256 维/帧），
+    按 `(路径, mtime, 大小)` 缓存，重复调用不重复解码。
+  - `_visual_shared_window_mse()`：取两段指纹**最相似的 0.5s 窗口**的 MSE。
+    不用"整段前缀比对"——源里的重复区间常只覆盖镜头的一部分（实测源 9.25-10.38s 重复，
+    而选中镜头是 9.27-10.64s，尾部 0.26s 并不重复），整段比会被不重复的尾部拉高而漏判。
+    跳过近纯色/黑场窗口，否则黑场之间 MSE 0.0 互相误判。
+  - `drop_visual_duplicates()`：按高光分降序，同一画面只留最高分代表。
+  - 接进 `select_highlight_shots()`，且放在区间贪心**之前** —— 被剔掉的镜头由"下一个最优"
+    补位，不会白白少镜头。新增 CLI `--visual-dedup-threshold`（0 关闭）。
+- **分辨率/阈值是实测选的**（同一素材）：
+  | 指纹 | 真实重复对 MSE | 最接近的非重复对 | 合成细棋盘素材的非重复对 |
+  |---|---|---|---|
+  | 8x8 | 0~23 | 1074 | **9.9（误判）** |
+  | **16x16** | **0~37** | **1319** | **1658** |
+  8x8 会误判的原因：细高频纹理（密棋盘）降采样后会被**平均成同一种灰**（`base` 与
+  `255-base` 的均值恒为 ~127.5）。16x16 保留住了图案。阈值取 **200**，落在 37 与 1319 的
+  几何中点附近，上下各留 5 倍余量。
+- **实测**（真实素材 / calm / 67 镜头）：丢掉 **7 个**画面重复的镜头（MSE 0.0~37.3，
+  源 3.00/22.60/31.43/38.90/0.13/22.07/30.90 各与 1.00 或 2.13 或 9.27 重复）；
+  区间贪心照旧取满 **15 个**（补位生效）；成片 画面 9.43s / 声音 9.52s。
+  成片级重复检查（10fps 滑窗、排除相邻窗口）：**1 处 → 0 处**。
+- **门禁**：新增 `scripts/smoke_visual_dedup.py`，**自包含 + 11 项断言**：造一段
+  "第 6 块图案 == 第 1 块"的源模拟回顾片段 → 检出 6 个镜头且源区间互不重叠、
+  **用与指纹无关的 10fps/96x54 彩色滑窗独立复核**两块画面确实相同（MSE 0.0，对照 26032）、
+  丢掉的是低分那一个、【反证】阈值 0 时不丢镜头、不同镜头 MSE 远大于阈值、
+  `select_highlight_shots` 返回值两两不重复。`pytest` 42 passed。
+- **已知既有问题（与本次无关）**：`scripts/smoke_preview.py` 因
+  `packages/webui/src/app.py` 已把 `_tasks` 改成 `_store()` 而 `ImportError`（两文件均未改动）。
 
 #### F1.5 / F1.1 / F1.2 实现记录
 - **F1.5**：新增 `packages/subtitle_engine/src/burn_pipeline.py::transcribe_and_burn`，
