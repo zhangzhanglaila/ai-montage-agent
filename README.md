@@ -285,6 +285,10 @@ ai-montage-agent/
 
 [⬆ 返回顶部 / Back to top](#ai-montage-agent)
 
+如果这个项目对你有帮助，欢迎赞赏支持 ☕
+
+![e2704e340ac74802081327175480db49](README.assets/e2704e340ac74802081327175480db49.png)
+
 ---
 
 # English
@@ -557,3 +561,7 @@ ai-montage-agent/
 MIT License
 
 [⬆ Back to top](#ai-montage-agent)
+
+If this project helps you, feel free to buy me a coffee ☕
+
+![e2704e340ac74802081327175480db49](README.assets/e2704e340ac74802081327175480db49-1792459188812-2.png)
