@@ -85,7 +85,7 @@ python pipeline.py \
   --output my_montage.mp4
 ```
 
-B站素材（可能有作者水印）：
+B站素材（下载走 playurl API，比 yt-dlp 稳；可能有作者水印）：
 
 ```bash
 python pipeline.py \
@@ -364,7 +364,7 @@ python pipeline.py \
   --output my_montage.mp4
 ```
 
-Bilibili clips (may carry creator watermarks):
+Bilibili clips (playurl API is used for downloads; may carry creator watermarks):
 
 ```bash
 python pipeline.py \

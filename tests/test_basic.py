@@ -48,6 +48,16 @@ def test_highlight_scorer():
     assert 0.0 <= score <= 1.0
 
 
+def test_bilibili_helpers():
+    from packages.video_crawler.src.bilibili_crawler import BilibiliCrawler
+
+    assert BilibiliCrawler._extract_bvid(
+        "https://www.bilibili.com/video/BV1ikJo6zECd"
+    ) == "BV1ikJo6zECd"
+    assert BilibiliCrawler._parse_duration("1:02:03") == 3723
+    assert BilibiliCrawler._parse_duration("7:22") == 442
+
+
 def test_transition_engine_import():
     from montage_engine.src.transition_engine import TransitionEngine
     assert TransitionEngine is not None

@@ -241,7 +241,25 @@ class BgmCrawler:
         return self._extract_audio(url, str(cache_path))
 
     def _extract_audio(self, url: str, output_path: str) -> Optional[str]:
-        """用 yt-dlp 提取音频为 MP3"""
+        """提取音频为 MP3：B 站先走 playurl API，其他站点走 yt-dlp。"""
+        if "bilibili.com/video/" in url:
+            try:
+                from .bilibili_crawler import BilibiliCrawler
+                src = Path(output_path).with_name(Path(output_path).stem + "_src.mp4")
+                got = BilibiliCrawler().download_video(url, str(src))
+                if got and Path(got).exists():
+                    r = subprocess.run(
+                        ["ffmpeg", "-y", "-v", "error", "-i", got, "-vn",
+                         "-c:a", "libmp3lame", "-q:a", "2", output_path],
+                        capture_output=True,
+                    )
+                    Path(got).unlink(missing_ok=True)
+                    if r.returncode == 0 and Path(output_path).exists():
+                        return output_path
+                    print("       B站音频转码失败，回退 yt-dlp")
+            except Exception as e:
+                print(f"       B站音频提取失败，回退 yt-dlp: {e}")
+
         cmd = [
             "yt-dlp", "--js-runtimes", "node",
             "-x", "--audio-format", "mp3",
