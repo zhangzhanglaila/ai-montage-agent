@@ -98,10 +98,10 @@ feat(<scope>): <动词 + 对象，简述做了什么>
 
 ### 1.4 冒烟脚本约定
 
-每个功能配一个 `scripts/smoke_<feature>.py`，用 `test_assets/` 的素材最小化跑一遍，输出到 `output/smoke/`：
+每个功能配一个 `scripts/smoke/smoke_<feature>.py`，用 `test_assets/` 的素材最小化跑一遍，输出到 `output/smoke/`：
 
 ```bash
-python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
+python scripts/smoke/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 ```
 
 用途：既是本次 commit 的证据，也是回归测试基础。
@@ -139,7 +139,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
   ```
 - **集成**：`MontagePipeline.run()` 渲染后、`enable_sfx` 参数分支内调用；CLI 加 `--sfx`（choices: `none/auto`，默认 `none`）。
 - **素材**：优先内置 5–8 个免版权音效（CC0），避免版权风险；不用爬虫下载音效。
-- **验收**：`scripts/smoke_sfx.py` 用 1 段视频 + 1 首 BGM 产出带音效成片，音效落在强拍上（可用波形图核对）。
+- **验收**：`scripts/smoke/smoke_sfx.py` 用 1 段视频 + 1 首 BGM 产出带音效成片，音效落在强拍上（可用波形图核对）。
 - **预估**：2–3 人日。
 - **commit**：`feat(sfx): 新增节拍音效卡点引擎（whoosh/impact 自动叠加强拍）`
 
@@ -161,7 +161,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
   - `run()` 新增 `narration_script` / `voice` 参数，在渲染后把旁白轨与成片混音（复用 `dialogue_ducking` 闪避逻辑，旁白段 BGM 自动降 8–12dB）；
   - CLI：`--narrate "主题"`（LLM 自动写词）、`--voice zh-CN-YunxiNeural`、`--script script.txt`（自定义词）。
   - 依赖：`edge-tts`（免费、无需 key）加入 `requirements.txt`。
-- **验收**：`scripts/smoke_voice.py` 产出"画面 + 中文旁白 + 自动闪避的 BGM"成片。
+- **验收**：`scripts/smoke/smoke_voice.py` 产出"画面 + 中文旁白 + 自动闪避的 BGM"成片。
 - **预估**：4–5 人日。
 - **commit**：`feat(voice): 新增 AI 配音旁白引擎与旁白轨闪避混音`
 
@@ -177,7 +177,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
   ```
 - **实现要点**：复用 `HighlightScorer` 的高分帧抽帧；Pillow 叠标题（描边 + 底衬）、竖版 `3:4`、横版 `16:9` 各一张；字体走系统字体回退链。
 - **集成**：CLI `--cover "标题"`，输出到 `output/<name>_cover.jpg`；WebUI 任务结果区展示。
-- **验收**：`scripts/smoke_cover.py` 产出 2 张封面图，标题清晰可读。
+- **验收**：`scripts/smoke/smoke_cover.py` 产出 2 张封面图，标题清晰可读。
 - **预估**：2 人日。
 - **commit**：`feat(cover): 新增视频封面/缩略图自动生成（16:9 + 3:4）`
 
@@ -192,7 +192,7 @@ python scripts/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
   def build_bilingual_ass(segments, style, out_path) -> str
   ```
 - **集成**：CLI `--translate en`（与 `--subtitles` 组合）；LLM 走已有 OpenAI 兼容配置，无 key 时降级 `deep-translator`（Google 免费源）。
-- **验收**：`scripts/smoke_translate.py` 产出中英双行字幕成片。
+- **验收**：`scripts/smoke/smoke_translate.py` 产出中英双行字幕成片。
 - **预估**：2 人日。
 - **commit**：`feat(subtitle): 新增字幕翻译与双语字幕压制`
 
@@ -315,7 +315,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
   同一个文件当两个源传入（检出 134 = 2×67 重复内容）也能收敛到 15 个、
   最小空隙 1.13s、0 相接。
   对比成片：`output/demo/dedup_before_gap0.mp4`(19.1s) / `dedup_after_gap1.mp4`(14.8s)。
-- **门禁**：`pytest` **42 passed**；新增 `scripts/smoke_shot_dedup.py`
+- **门禁**：`pytest` **42 passed**；新增 `scripts/smoke/smoke_shot_dedup.py`
   **21 项可证伪断言全过**，含**反证**——用旧算法在同一个构造池/同素材上跑，
   它确实会同时选中 `2` 与 `4`（源上仅隔 0.13s），且在 22 镜头素材上只能选出 1 个
   （凑不出成片）；既有 6 个冒烟脚本无回归；`--min-shot-gap` 已进 `--help`。
@@ -343,7 +343,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
   用**数字静音**当 BGM 走完整 `render()`，成片 max −16.0dB、高频 −46.2dB
   （若回退纯 BGM 必为 −91dB）→ 证明成片声音确实来自原片。真实 CLI 跑 calm（全转场）
   风格，日志无任何「混音失败 / xfade segment 失败」回退信息。
-- **门禁**：`pytest` **42 passed**（无 skip）；新增 `scripts/smoke_transition_audio.py`
+- **门禁**：`pytest` **42 passed**（无 skip）；新增 `scripts/smoke/smoke_transition_audio.py`
   **18 项可证伪断言全过**（含 FFT 主频检出 440/1200Hz、反证静音、变速音画等长、
   fade 成片时长=3.5s 解析值、音画时长差 <0.1s）；既有 sfx/voice/cover/mixer/speed 冒烟无回归。
 
@@ -365,7 +365,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
   音频互相关也不可靠（极短片段下 correlation >1，中位偏移 −0.525s 但离群值满天飞）。
 - **实测**（同一批 42 个长镜头）：实际起点与标称相差 ≤0.15s 的 **7/42 → 38/42**；
   源上被 ≥4 个镜头覆盖的时刻 **5 → 0**。成片入选的 13 个镜头：0 对重叠、最大覆盖 1。
-- **门禁**：新增 `scripts/smoke_shot_cut_accuracy.py`，**自包含 + 31 项断言**：
+- **门禁**：新增 `scripts/smoke/smoke_shot_cut_accuracy.py`，**自包含 + 31 项断言**：
   A 每个镜头实际内容起点 == 标称 start（≤1.5 帧，31/31）；
   D 文件时长 == 标称时长（31/31）；**B 反证**：老 `-c copy` 命令在**同一区间**上偏移 −1.00s；
   C 源时间轴上无时刻被 ≥2 个镜头实际覆盖。
@@ -397,7 +397,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
   |---|---|---|---|
   | 修复前 | **1.53s**（46 帧） | 7.01s | 最多 1.84s |
   | 修复后 | **11.30s**（341 帧） | 11.33s | **0/12 段 >0.032s（一帧）** |
-- **门禁**：新增 `scripts/smoke_av_length.py`，**自包含 + 8 项断言**：补帧到请求时长、
+- **门禁**：新增 `scripts/smoke/smoke_av_length.py`，**自包含 + 8 项断言**：补帧到请求时长、
   clip 音画等长、clip 仍带音轨、**负对照**（老滤镜链 画面 0.30s / 声音 1.50s）、
   `_get_duration` 返回视频流时长、拍数不超可用画面、0.20s 镜头被跳过、端到端成片音画等长。
   `pytest` 42 passed。
@@ -430,12 +430,12 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
   源 3.00/22.60/31.43/38.90/0.13/22.07/30.90 各与 1.00 或 2.13 或 9.27 重复）；
   区间贪心照旧取满 **15 个**（补位生效）；成片 画面 9.43s / 声音 9.52s。
   成片级重复检查（10fps 滑窗、排除相邻窗口）：**1 处 → 0 处**。
-- **门禁**：新增 `scripts/smoke_visual_dedup.py`，**自包含 + 11 项断言**：造一段
+- **门禁**：新增 `scripts/smoke/smoke_visual_dedup.py`，**自包含 + 11 项断言**：造一段
   "第 6 块图案 == 第 1 块"的源模拟回顾片段 → 检出 6 个镜头且源区间互不重叠、
   **用与指纹无关的 10fps/96x54 彩色滑窗独立复核**两块画面确实相同（MSE 0.0，对照 26032）、
   丢掉的是低分那一个、【反证】阈值 0 时不丢镜头、不同镜头 MSE 远大于阈值、
   `select_highlight_shots` 返回值两两不重复。`pytest` 42 passed。
-- **已知既有问题（与本次无关）**：`scripts/smoke_preview.py` 因
+- **已知既有问题（与本次无关）**：`scripts/smoke/smoke_preview.py` 因
   `packages/webui/src/app.py` 已把 `_tasks` 改成 `_store()` 而 `ImportError`（两文件均未改动）。
 
 #### F1.5 / F1.1 / F1.2 实现记录
@@ -509,7 +509,7 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
 - WebUI 新端点：`GET /api/task/{id}/proxy`、`GET /api/task/{id}/proxy/video`、
   `POST /api/task/{id}/preview`、`GET /api/task/{id}/preview/{pid}`、
   `POST /api/preview/clear`；前端结果区改为 `<video>` 播代理并提供「参数预览」按钮。
-- 冒烟 `scripts/smoke_preview.py`：代理 282kbps（原片 1408kbps）、
+- 冒烟 `scripts/smoke/smoke_preview.py`：代理 282kbps（原片 1408kbps）、
   参数预览 1.5s 出片（验收要求 ≤10s）、缓存命中 0ms，并用 FastAPI `TestClient`
   把 4 个端点真实打了一遍；另启动过真实 uvicorn 服务验证页面与路由。
 
@@ -531,7 +531,7 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
   时间表达式，一次编码得到连续平滑跟随；失败回退静态居中。
   `target_aspect` 现支持任意比例；CLI 新增 `--reframe-aspect "3:4"` 与
   `--reframe-method subject|center`。
-- 冒烟 `scripts/smoke_track.py`：合成「白方块匀速左→右」视频做**相关性断言**
+- 冒烟 `scripts/smoke/smoke_track.py`：合成「白方块匀速左→右」视频做**相关性断言**
   （实测 corr=0.971），并断言裁切窗口像素序列单调右移、跟随裁切后画面中心亮度
   由 0 → 207（证明主体确实进了画面中心），另有真实素材端到端。
 - 踩坑：`drawbox` 的时间表达式在本机 ffmpeg 上不渲染（画面全黑），
@@ -559,7 +559,7 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
   （本机两者均未安装）。
 - CLI：`--index-shots [PATH]` / `--query-shots "文本"` / `--index-top-k` /
   `--index-export DIR` / `--embedder auto|clip|heuristic`。
-- 冒烟 `scripts/smoke_index.py`：不满足于「跑通」，做**行为断言**——「暗」的
+- 冒烟 `scripts/smoke/smoke_index.py`：不满足于「跑通」，做**行为断言**——「暗」的
   top-1 代表帧平均亮度必须显著低于「亮」的 top-1（实测 28.4 vs 164.5，
   目视确认为暗场走廊 vs 明亮日戏）。
 
@@ -603,7 +603,7 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
   `--task-retry` / `--task-cancel` / `--task-resume` / `--task-stale` / `--task-db`。
 - 门禁：
   - `pytest` **35 passed**（新增 `tests/test_task_queue.py` 10 例，含 WebUI 集成）；
-  - `scripts/smoke_task_queue.py` 6 项可证伪断言全过：持久化跨连接 /
+  - `scripts/smoke/smoke_task_queue.py` 6 项可证伪断言全过：持久化跨连接 /
     原子认领 / 退避重试(attempts=3 & 退避曲线 [1,2,4,8,8,8] & 到点才可认领) /
     不可重试不重试 / 断点续跑 / worker 生命周期。
   - **真实 uvicorn 端到端**：起服务提交任务→执行→终态；随后**杀进程**、注入一条
@@ -637,11 +637,11 @@ montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
 - 门禁：
   - `pytest` **42 passed**（`tests/test_task_queue.py` 新增 7 例 Redis 测试，
     `skipif(not redis_available(...))` 门控，无 Redis 的机器自动跳过、不影响全绿）；
-  - `scripts/smoke_task_queue_redis.py` **25 项可证伪断言全过**（真 Redis 实例）：
+  - `scripts/smoke/smoke_task_queue_redis.py` **25 项可证伪断言全过**（真 Redis 实例）：
     基础读写 / 退避曲线 `[1,2,4,8,8]` / 非重试落终态 / 6 线程×20 任务原子抢单零重复 /
     `resume_stale` 计数 `{resumed:1, exhausted:1}` / worker 端到端失败重试到 done /
     **CLI `pipeline.py --task-list` 走 Redis 后端并列出任务**；
-  - `scripts/smoke_task_queue.py`（SQLite）6 项**无回归**；
+  - `scripts/smoke/smoke_task_queue.py`（SQLite）6 项**无回归**；
   - Redis 连不上时该冒烟脚本打印 SKIP 并退出码 0（不拖垮无 Redis 环境的门禁）。
 - 验证环境：用户本机 `D:\programs\Redis-x64-3.0.504`（Redis **3.0.504** Windows 版），
   `redis-py 8.0.0`。

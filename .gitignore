@@ -82,3 +82,5 @@ concat_list.txt
 cache/
 test_dl/
 test_assets/
+uploads/
+artifacts/
