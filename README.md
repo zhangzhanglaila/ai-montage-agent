@@ -3,6 +3,8 @@
 <p>
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/FFmpeg-required-green?logo=ffmpeg&logoColor=white" alt="FFmpeg required">
+  <img src="https://img.shields.io/badge/Beat--Sync-enabled-brightgreen" alt="Beat sync">
+  <img src="https://img.shields.io/badge/Black--Frame--Cleanup-enabled-brightgreen" alt="Black frame cleanup">
   <img src="https://img.shields.io/badge/WebUI-FastAPI-009688?logo=fastapi&logoColor=white" alt="WebUI FastAPI">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
 </p>
@@ -30,27 +32,27 @@
 
 | 能力 | 说明 |
 |------|------|
-| 一键成片 | 素材 + BGM + 一句话，自动完成卡点混剪 |
-| 卡在节拍上 | 镜头切点对齐 BGM 强弱拍，不是平均切 |
-| 高光优先 | 运动/时长/表情/运镜/音频 5 维评分选镜头 |
-| 丝滑转场 | 10+ 转场，按节拍强度自动选择 |
-| 音效卡点 | impact / whoosh / riser 自动铺点 |
-| BGM 闪避 | 人声出现时自动压低 BGM |
-| 横转竖 | 主体跟踪 + 自动裁切，适配短视频 |
-| 字幕生成 | Whisper 转录 + 8 种样式（可选） |
-| 画面增强 | 防抖 / 降噪 / 调色 / 色彩统一 |
-| 风格预设 | 11 种预设，一键切换 |
-| 多源素材 | B站 / PlayPhrase / YouTube / Dailymotion + 直链 |
-| 双端可用 | WebUI + CLI |
-| 任务队列 | SQLite / Redis，失败重试、断点恢复 |
-| LLM 导演 | 接入 OpenAI / Ollama 后自然语言控制（可选） |
+| ✅ 一键成片 | 素材 + BGM + 一句话，自动完成卡点混剪 |
+| ✅ 卡在节拍上 | 镜头切点对齐 BGM 强弱拍，不是平均切 |
+| ✅ 高光优先 | 运动/时长/表情/运镜/音频 5 维评分选镜头 |
+| ✅ 丝滑转场 | 10+ 转场，按节拍强度自动选择 |
+| ✅ 音效卡点 | impact / whoosh / riser 自动铺点 |
+| ✅ BGM 闪避 | 人声出现时自动压低 BGM |
+| ✅ 横转竖 | 主体跟踪 + 自动裁切，适配短视频 |
+| ✅ 字幕生成 | Whisper 转录 + 8 种样式（可选） |
+| ✅ 画面增强 | 防抖 / 降噪 / 调色 / 色彩统一 |
+| ✅ 风格预设 | 11 种预设，一键切换 |
+| ✅ 多源素材 | B站 / PlayPhrase / YouTube / Dailymotion + 直链 |
+| ✅ 双端可用 | WebUI + CLI |
+| ✅ 任务队列 | SQLite / Redis，失败重试、断点恢复 |
+| ✅ LLM 导演 | 接入 OpenAI / Ollama 后自然语言控制（可选） |
 
 ## 为什么用它
 
-- **不是随机切片**：镜头切点对齐鼓点、强拍和音乐段落。
-- **不是简单拼接**：5 维高光评分先筛镜头，再排时间轴。
-- **不是只有画面**：音效卡点、BGM 闪避、字幕、调色一起完成。
-- **不是只适合横屏**：主体跟踪自动裁竖屏，直接发短视频。
+- ✅ **不是随机切片**：镜头切点对齐鼓点、强拍和音乐段落。
+- ✅ **不是简单拼接**：5 维高光评分先筛镜头，再排时间轴。
+- ✅ **不是只有画面**：音效卡点、BGM 闪避、字幕、调色一起完成。
+- ✅ **不是只适合横屏**：主体跟踪自动裁竖屏，直接发短视频。
 
 ## 快速开始
 
@@ -320,27 +322,27 @@ ai-montage-agent/
 
 | Capability | What it does |
 |------------|--------------|
-| One-click edit | Clips + BGM + one prompt → finished beat-synced montage |
-| On-beat cuts | Shot cuts aligned to strong/weak beats, not evenly spaced |
-| Highlight-first | 5-axis scoring (motion / duration / faces / camera / audio) |
-| Smooth transitions | 10+ transitions chosen by beat intensity |
-| SFX on beats | impact / whoosh / riser cues placed automatically |
-| BGM ducking | Music ducks under dialogue |
-| Landscape → portrait | Subject tracking + auto reframe for short-form |
-| Subtitles | Whisper transcription + 8 styles (optional) |
-| Enhancement | Stabilize / denoise / color grade / color harmonize |
-| Style presets | 11 one-click presets |
-| Multi-source | Bilibili / PlayPhrase / YouTube / Dailymotion + direct URLs |
-| WebUI + CLI | Browser UI and command line |
-| Task queue | SQLite / Redis, retries and resume |
-| LLM director | Optional natural-language control via OpenAI / Ollama |
+| ✅ One-click edit | Clips + BGM + one prompt → finished beat-synced montage |
+| ✅ On-beat cuts | Shot cuts aligned to strong/weak beats, not evenly spaced |
+| ✅ Highlight-first | 5-axis scoring (motion / duration / faces / camera / audio) |
+| ✅ Smooth transitions | 10+ transitions chosen by beat intensity |
+| ✅ SFX on beats | impact / whoosh / riser cues placed automatically |
+| ✅ BGM ducking | Music ducks under dialogue |
+| ✅ Landscape → portrait | Subject tracking + auto reframe for short-form |
+| ✅ Subtitles | Whisper transcription + 8 styles (optional) |
+| ✅ Enhancement | Stabilize / denoise / color grade / color harmonize |
+| ✅ Style presets | 11 one-click presets |
+| ✅ Multi-source | Bilibili / PlayPhrase / YouTube / Dailymotion + direct URLs |
+| ✅ WebUI + CLI | Browser UI and command line |
+| ✅ Task queue | SQLite / Redis, retries and resume |
+| ✅ LLM director | Optional natural-language control via OpenAI / Ollama |
 
 ## Why use it
 
-- **Not random cuts** — cuts land on drums, strong beats, and song sections.
-- **Not just stitching** — 5-axis highlight scoring picks shots before the timeline.
-- **Not just video** — SFX, BGM ducking, subtitles, and color are handled together.
-- **Not landscape-only** — subject tracking auto-reframes to vertical for short-form.
+- ✅ **Not random cuts** — cuts land on drums, strong beats, and song sections.
+- ✅ **Not just stitching** — 5-axis highlight scoring picks shots before the timeline.
+- ✅ **Not just video** — SFX, BGM ducking, subtitles, and color are handled together.
+- ✅ **Not landscape-only** — subject tracking auto-reframes to vertical for short-form.
 
 ## Quick Start
 
