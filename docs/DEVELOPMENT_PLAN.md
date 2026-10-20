@@ -219,7 +219,7 @@ python scripts/smoke/smoke_voice.py     # 应产出 output/smoke/voice_demo.mp4
 
 ### F2.2 人脸 / 主体追踪（track）
 - 升级 `auto_reframe`：从"固定中心裁剪"→"主体轨迹跟随裁剪"，避免竖屏丢主角；顺带支持自动打码。
-- 新增 `packages/video_understanding/src/subject_tracker.py`（OpenCV/轻量模型），改造 `video_enhancement/src/auto_reframe.py`。
+- 新增 `packages/video_enhancement/src/subject_tracker.py`（OpenCV/轻量模型），改造 `video_enhancement/src/auto_reframe.py`。
 - 验收：`smoke_track.py` 竖屏输出中主体稳定居中。**5–6 人日**。
 - commit：`feat(track): 主体追踪裁切替换固定中心裁切`
 
@@ -514,14 +514,14 @@ CLI 新增 `--sfx / --narrate / --script / --cover* / --translate*` 共 12 个�
   把 4 个端点真实打了一遍；另启动过真实 uvicorn 服务验证页面与路由。
 
 **Phase 2 完成 → 已打 tag `v0.6`。** 新增 3 个能力包（shot_index / audio_mixer /
-webui.preview），扩写 2 个（video_understanding.subject_tracker / auto_reframe、
+webui.preview），扩写 2 个（video_enhancement.subject_tracker / auto_reframe、
 montage_engine.speed_curve），新增 5 个自包含冒烟脚本。
 
 #### F2.2 实现记录
 - **发现真 bug**：原 `auto_reframe` 的动态裁切表达式写成
   `if(between(t,a,b),x,x)` 再相加，数学上**恒等于 x**，从未真正跟随主体；
   且强依赖 `cv2`（本机未装）→ 直接 ImportError。
-- 新增 `packages/video_understanding/src/subject_tracker.py`：**纯 numpy/Pillow**
+- 新增 `packages/video_enhancement/src/subject_tracker.py`：**纯 numpy/Pillow**
   的 显著性（局部对比度 + 饱和度） + 帧差运动 → x/y 能量投影 → 滑动窗口定位 →
   EMA + 移动平均平滑。`cv2` 仅作可选人脸增强，缺失时静默跳过。
 - **关键算法细节**：当主体明显小于裁切窗口时，窗口和会出现**平台**，

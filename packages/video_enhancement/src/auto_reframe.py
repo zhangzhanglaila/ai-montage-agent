@@ -7,7 +7,7 @@
 裁切表达式写成 `if(between(t,a,b),x,x)` 再相加，**恒等于 x**，实际从未跟随主体。
 
 现改为：
-1. 主体定位走 `packages.video_understanding.src.subject_tracker`
+1. 主体定位走 `packages.video_enhancement.src.subject_tracker`
    （纯 numpy 显著性 + 运动 + 滑动窗口，cv2 仅作可选增强）；
 2. 裁切路径生成**分段线性插值表达式** `x(t)`，交给 ffmpeg 的 `crop` 时间表达式，
    一次编码完成平滑跟随（已验证 `crop=w:h:x='...':y='...'` 可用）；
@@ -254,7 +254,7 @@ def auto_reframe(
     if method == "subject":
         print("  追踪主体轨迹...")
         try:
-            from packages.video_understanding.src.subject_tracker import SubjectTracker
+            from packages.video_enhancement.src.subject_tracker import SubjectTracker
 
             tracker = SubjectTracker(
                 sample_fps=sample_fps,
@@ -308,7 +308,7 @@ def export_crop_track(
     target_aspect: float = 9 / 16, **tracker_kwargs,
 ) -> Optional[str]:
     """把主体轨迹导出成 JSON，便于调试 / 在别处复用。"""
-    from packages.video_understanding.src.subject_tracker import SubjectTracker
+    from packages.video_enhancement.src.subject_tracker import SubjectTracker
 
     info = get_video_info(input_path)
     crop_w, crop_h = compute_crop_window(info["width"], info["height"], target_aspect)

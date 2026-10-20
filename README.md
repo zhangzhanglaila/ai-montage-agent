@@ -255,18 +255,17 @@ ai-montage-agent/
 ├── packages/
 │   ├── montage/             # 核心 Pipeline（镜头/节拍/卡点/渲染）
 │   ├── core_types/          # 统一数据类型
-│   ├── video_understanding/ # 视频理解（旧版，保留兼容）
 │   ├── video_crawler/       # 素材爬取（B站/YouTube/台词搜索/BGM 搜索）
-│   ├── video_enhancement/   # 视频增强（防抖/降噪/调色/裁剪/闪避/风格模板）
+│   ├── video_enhancement/   # 视频增强（防抖/降噪/调色/裁剪/闪避/主体追踪）
 │   ├── subtitle_engine/     # 字幕引擎（Whisper 转录 + 压制）
 │   ├── ai_director/         # LLM 自然语言控制
-│   ├── timeline_engine/     # 时间轴规划（旧版，保留兼容）
 │   ├── timeline_export/     # 时间轴导出（EDL/CSV/JSON/XML/OTIO）
-│   ├── beat_engine/         # 节拍引擎（旧版，保留兼容）
+│   ├── sound_engine/        # 音效卡点（impact/whoosh）
+│   ├── audio_mixer/         # 多轨混音
 │   ├── montage_engine/      # 蒙太奇引擎（10+ 种转场）
 │   ├── render_engine/       # 渲染引擎（FFmpeg 执行器）
 │   └── webui/               # WebUI（FastAPI + B站漫画风格前端）
-├── apps/                    # worker CLI（旧版）；主入口是 pipeline.py / --webui
+├── apps/                    # 入口说明（主入口是 pipeline.py / --webui）
 ├── scripts/                 # smoke/ 冒烟测试 + demo/ 演示
 ├── artifacts/               # 演示样片（gitignored）
 ├── cache/ output/ uploads/  # 运行产物（gitignored）
@@ -535,18 +534,17 @@ ai-montage-agent/
 ├── packages/
 │   ├── montage/             # Core pipeline (shots/beats/sync/render)
 │   ├── core_types/          # Shared data types
-│   ├── video_understanding/ # Legacy video understanding (kept for compatibility)
 │   ├── video_crawler/       # Clip crawling (Bilibili/YouTube/quote/BGM search)
-│   ├── video_enhancement/   # Enhancement (stabilize/denoise/grade/reframe/ducking/styles)
+│   ├── video_enhancement/   # Enhancement (stabilize/denoise/grade/reframe/ducking/tracking)
 │   ├── subtitle_engine/     # Subtitle engine (Whisper transcribe + burn-in)
 │   ├── ai_director/         # LLM natural-language control
-│   ├── timeline_engine/     # Legacy timeline planning (kept for compatibility)
 │   ├── timeline_export/     # Timeline export (EDL/CSV/JSON/XML/OTIO)
-│   ├── beat_engine/         # Legacy beat engine (kept for compatibility)
+│   ├── sound_engine/        # Beat-synced SFX (impact/whoosh)
+│   ├── audio_mixer/         # Multi-track audio mixing
 │   ├── montage_engine/      # Montage engine (10+ transitions)
 │   ├── render_engine/       # Render engine (FFmpeg executor)
 │   └── webui/               # WebUI (FastAPI + Bilibili-comic-style frontend)
-├── apps/                    # Legacy worker CLI; main entry is pipeline.py / --webui
+├── apps/                    # Entry-point notes (main entry: pipeline.py / --webui)
 ├── scripts/                 # smoke/ tests + demo/ samples
 ├── artifacts/               # Demo renders (gitignored)
 ├── cache/ output/ uploads/  # Runtime artifacts (gitignored)

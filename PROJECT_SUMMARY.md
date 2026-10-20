@@ -110,7 +110,7 @@ ai-montage-agent/
 │   ├── subtitle_engine/     # 字幕
 │   ├── task_queue/          # 持久化任务队列
 │   └── ...                  # 其他领域包
-├── apps/                    # 旧 worker CLI；主入口是 pipeline.py / --webui
+├── apps/                    # 入口说明（主入口是 pipeline.py / --webui）
 ├── scripts/                 # smoke/ 冒烟 + demo/ 演示
 ├── tests/                   # pytest
 ├── docs/                    # 文档

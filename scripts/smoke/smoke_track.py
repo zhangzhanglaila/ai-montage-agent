@@ -87,7 +87,7 @@ def main() -> int:
     print("F2.2 冒烟：主体追踪 + 竖屏跟随裁切")
     print("=" * 54)
 
-    from packages.video_understanding.src.subject_tracker import SubjectTracker
+    from packages.video_enhancement.src.subject_tracker import SubjectTracker
     from packages.video_enhancement.src.auto_reframe import (
         auto_reframe, crop_track_to_pixels, track_to_pixel_series, compute_crop_window,
     )
@@ -173,7 +173,7 @@ def main() -> int:
         print("  （无真实素材，跳过）")
 
     print("\n" + "=" * 54)
-    print("冒烟通过 ✓ （跟随相关性 / 表达式单调 / 竖屏输出 / 中心亮度上升）")
+    print("冒烟通过 - （跟随相关性 / 表达式单调 / 竖屏输出 / 中心亮度上升）")
     return 0
 
 

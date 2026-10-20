@@ -1,5 +1,8 @@
 # AI Montage Agent 架构文档
 
+> 当前代码实现以 `packages/montage/` 为准；旧版 `beat_engine`、`timeline_engine`、`video_understanding` 已移除。
+> 入口：根 `pipeline.py`（兼容 shim）、`python pipeline.py --webui`。
+
 ## 系统架构
 
 ```
