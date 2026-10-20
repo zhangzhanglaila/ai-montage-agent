@@ -1,6 +1,10 @@
 """
-CLI Tool
-命令行工具 - 提供命令行接口进行混剪操作
+CLI Tool（旧版 Typer CLI）
+
+已不是主入口。新工作请使用仓库根目录的 `pipeline.py`：
+    python pipeline.py --movies a.mp4 --bgm bgm.mp3
+    python pipeline.py --webui
+旧命令保留用于兼容，后续版本会移除。
 """
 
 import typer

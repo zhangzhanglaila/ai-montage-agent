@@ -97,52 +97,29 @@ AI自动影视混剪Agent - 一个能够自动生成B站级影视混剪的AI系�
 
 ## 项目结构
 
-```
+```text
 ai-montage-agent/
-├── apps/
-│   ├── api/              # FastAPI后端
-│   │   └── src/
-│   │       ├── __init__.py
-│   │       └── main.py
-│   └── worker/           # CLI工具
-│       └── src/
-│           └── cli.py
+├── pipeline.py              # 兼容入口（实际实现 packages/montage）
 ├── packages/
-│   ├── video-understanding/  # 视频理解模块
-│   │   └── src/
-│   │       ├── __init__.py
-│   │       ├── shot_detector.py
-│   │       └── highlight_scorer.py
-│   ├── beat-engine/          # 节拍引擎
-│   │   └── src/
-│   │       ├── __init__.py
-│   │       ├── beat_detector.py
-│   │       └── beat_sync_engine.py
-│   ├── montage-engine/       # 蒙太奇引擎
-│   │   └── src/
-│   │       ├── __init__.py
-│   │       ├── transition_engine.py
-│   │       └── video_composer.py
-│   ├── timeline-engine/      # 时间轴引擎
-│   │   └── src/
-│   │       ├── __init__.py
-│   │       ├── timeline_planner.py
-│   │       ├── emotion_curve.py
-│   │       └── rhythm_planner.py
-│   └── render-engine/        # 渲染引擎
-│       └── src/
-│           ├── __init__.py
-│           └── ffmpeg_executor.py
-├── tests/               # 测试
-│   └── test_basic.py
-├── examples/            # 示例
-│   └── demo.py
-├── docs/                # 文档
-│   └── architecture.md
-├── pyproject.toml       # 项目配置
-├── Makefile            # 构建脚本
-├── README.md           # 项目说明
-└── .env.example        # 环境变量示例
+│   ├── montage/             # 核心 Pipeline（镜头/节拍/卡点/渲染）
+│   ├── core_types/
+│   ├── webui/               # FastAPI WebUI
+│   ├── sound_engine/        # 音效卡点
+│   ├── video_crawler/       # 素材/BGM 爬取
+│   ├── video_enhancement/   # 增强/调色/裁切/闪避
+│   ├── subtitle_engine/     # 字幕
+│   ├── task_queue/          # 持久化任务队列
+│   └── ...                  # 其他领域包
+├── apps/                    # 旧 worker CLI；主入口是 pipeline.py / --webui
+├── scripts/                 # smoke/ 冒烟 + demo/ 演示
+├── tests/                   # pytest
+├── docs/                    # 文档
+├── artifacts/               # 演示样片（gitignored）
+├── cache/ output/ uploads/  # 运行产物（gitignored）
+├── README.assets/           # README 图片
+├── pyproject.toml
+├── Makefile
+└── README.md
 ```
 
 ## 技术栈
