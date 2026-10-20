@@ -65,10 +65,7 @@ XFADE_MAP = {
 }
 
 
-@PATTERNS_DIR.mkdir(parents=True, exist_ok=True)
-def _ensure_dir():
-    pass
-_ensure_dir()
+PATTERNS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_patterns_from_dir() -> Dict[str, dict]:

@@ -56,6 +56,13 @@ _TASK_DEFAULTS = {
     "aspect_ratio": "16/9", "enable_subtitles": False, "subtitle_style": "tiktok",
     "subtitle_lang": "auto", "translate_lang": "", "color_grade": "none",
     "enable_ducking": False, "enable_harmonize": False, "enhance_options": [],
+    "enable_sfx": False,
+    "shot_density": "standard",
+    "prompt": "",
+    "target_duration": 0.0,
+    "threshold": 0.2,
+    "mute_source": False,
+    "clean_black": True,
     "transition_pattern_id": "auto",
 }
 
@@ -92,6 +99,13 @@ def _run_montage_task(task_id: str, params: dict):
     color_grade = p["color_grade"]
     enable_ducking = p["enable_ducking"]
     enable_harmonize = p["enable_harmonize"]
+    enable_sfx = p.get("enable_sfx", False)
+    shot_density = p.get("shot_density", "standard")
+    prompt = p.get("prompt", "")
+    target_duration = float(p.get("target_duration") or 0.0)
+    threshold = float(p.get("threshold", 0.2))
+    mute_source = bool(p.get("mute_source", False))
+    clean_black = bool(p.get("clean_black", True))
     enhance_options = p["enhance_options"] or []
     transition_pattern_id = p["transition_pattern_id"]
 
@@ -183,15 +197,55 @@ def _run_montage_task(task_id: str, params: dict):
         from packages.montage_engine.src.transition_patterns import get_pattern
         trans_pattern = get_pattern(transition_pattern_id) if transition_pattern_id != "auto" else None
 
+        # 一句话效果描述：只覆盖仍是默认值的参数，手动选择优先
+        if prompt:
+            try:
+                from packages.ai_director.src.effect_prompt import parse_effect_prompt
+                effect = parse_effect_prompt(prompt)
+                if effect:
+                    if effect.get("style") and style == "dynamic":
+                        style = effect["style"]
+                    if effect.get("enable_sfx"):
+                        enable_sfx = True
+                    if effect.get("shot_density") and shot_density == "standard":
+                        shot_density = effect["shot_density"]
+                    if effect.get("threshold") and abs(threshold - 0.2) < 1e-6:
+                        threshold = float(effect["threshold"])
+                    if effect.get("target_duration") and not target_duration:
+                        target_duration = float(effect["target_duration"])
+                    if effect.get("mute_source_audio") is not None:
+                        mute_source = bool(effect["mute_source_audio"])
+                    if effect.get("clean_black"):
+                        clean_black = True
+                    if effect.get("aspect_ratio") and aspect_ratio == "16/9":
+                        aspect_ratio = effect["aspect_ratio"]
+                    task["message"] = f"效果解析: {effect}"
+            except Exception as e:
+                print(f"[Prompt] 解析失败（忽略）: {e}")
+
+        # 镜头密度 -> (min_shot_gap, max_per_video)
+        density_map = {
+            "standard": (1.0, 15),
+            "dense": (0.5, 25),
+            "max": (0.0, 40),
+        }
+        min_shot_gap, max_per_video = density_map.get(shot_density, (1.0, 15))
+
         pipeline = MontagePipeline(cache_dir="cache", output_dir="output")
         result = pipeline.run(
             video_paths, bgm_path, style, output_name,
-            threshold=0.2,
+            threshold=threshold,
             color_preset=final_color_grade if final_color_grade != "none" else None,
             enable_reframe=enable_reframe,
             reframe_aspect=reframe_aspect,
             enable_ducking=enable_ducking,
             enable_harmonize=enable_harmonize,
+            enable_sfx=enable_sfx,
+            min_shot_gap=min_shot_gap,
+            max_per_video=max_per_video,
+            clean_black=clean_black,
+            target_duration=target_duration or None,
+            mute_source_audio=mute_source,
             transition_pattern=trans_pattern,
         )
 
@@ -325,6 +379,13 @@ async def create_montage(
     color_grade: str = Form("none"),
     enable_ducking: str = Form("false"),
     enable_harmonize: str = Form("false"),
+    enable_sfx: str = Form("false"),
+    shot_density: str = Form("standard"),
+    prompt: str = Form(""),
+    target_duration: str = Form("0"),
+    detect_threshold: str = Form("0.2"),
+    mute_source: str = Form("false"),
+    clean_black: str = Form("true"),
     enhance_options: str = Form("[]"),
     transition_pattern: str = Form("auto"),
 ):
@@ -361,6 +422,13 @@ async def create_montage(
         "color_grade": color_grade,
         "enable_ducking": enable_ducking == "true",
         "enable_harmonize": enable_harmonize == "true",
+        "enable_sfx": enable_sfx == "true",
+        "shot_density": shot_density,
+        "prompt": prompt,
+        "target_duration": float(target_duration or 0),
+        "threshold": float(detect_threshold or 0.2),
+        "mute_source": mute_source == "true",
+        "clean_black": clean_black == "true",
         "enhance_options": json.loads(enhance_options) if enhance_options else [],
         "transition_pattern_id": transition_pattern,
     }

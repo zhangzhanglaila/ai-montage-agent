@@ -88,7 +88,7 @@ def main() -> int:
     print(f"  输出: {out_video} ({out_video.stat().st_size} bytes)")
 
     print("\n" + "=" * 50)
-    print(f"冒烟通过 ✓ （{len(cues)} 个音效）")
+    print(f"冒烟通过 - （{len(cues)} 个音效）")
     return 0
 
 

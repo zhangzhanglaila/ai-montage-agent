@@ -39,6 +39,12 @@ def test_transition_engine_import():
     from montage_engine.src.transition_engine import TransitionEngine
     assert TransitionEngine is not None
 
+def test_transition_patterns_import():
+    """测试转场模板可导入（历史上 Path.mkdir 返回值被当装饰器，WebUI 必崩）"""
+    from montage_engine.src.transition_patterns import get_pattern
+    pattern = get_pattern("auto")
+    assert pattern["id"] == "auto"
+
 def test_ffmpeg_executor_import():
     """测试FFmpegExecutor导入"""
     from render_engine.src.ffmpeg_executor import FFmpegExecutor

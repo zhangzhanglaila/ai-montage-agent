@@ -68,13 +68,19 @@ class SfxEngine:
         beats: List,
         style: str = "dynamic",
         max_cues: int = 16,
+        duration: Optional[float] = None,
+        cut_times: Optional[List[float]] = None,
     ) -> List[SfxCue]:
         """根据节拍规划音效。
 
         Args:
-            beats: Beat 列表（需含 time / strength / beat_type 属性）
+            beats: Beat 列表（需含 time / strength / beat_type 属性）；
+                时间应已按成片 0s 对齐（pipeline 会裁掉 BGM 前奏）。
             style: 风格（intense/dynamic/calm），决定音效密度
             max_cues: 音效数量上限
+            duration: 成片实际时长（秒）。给定时只在该区间内选点，
+                避免音效落到成片之外被 amix 静默截掉。
+            cut_times: 真实剪辑点时间列表；whoosh 优先落在这些点上。
 
         Returns:
             按时间排序的 SfxCue 列表
@@ -82,20 +88,35 @@ class SfxEngine:
         if not beats:
             return []
 
+        # 只保留成片时长内的节拍。原实现使用整首 BGM 的拍点：
+        # 视频只有十几秒、BGM 有两分钟时，大部分 cue 会落在成片之外，
+        # 混音时被静默截掉，日志却仍按 "已叠加 N 个" 计数。
+        if duration is not None and duration > 0:
+            beats = [b for b in beats if 0.0 <= float(b.time) < float(duration)]
+        if not beats:
+            return []
+
         density = STYLE_DENSITY.get(style, 0.5)
         strong = [b for b in beats if getattr(b, "beat_type", "normal") == "strong"]
         other = [b for b in beats if getattr(b, "beat_type", "normal") != "strong"]
 
-        # 目标数量：按总节拍数 × 密度，至少 2 个
-        target = max(2, min(int(len(beats) * density), max_cues))
+        # 预留名额给真实切点 whoosh 和 riser
+        budget = max(2, max_cues - 4)
+        target = max(2, min(int(len(beats) * density), budget))
 
-        # 优先取强拍，不足则从其余拍点均匀补齐
-        selected = list(strong)[:target]
+        # 均匀覆盖整段视频，而不是只取最前面的 target 个强拍
+        selected: List = []
+        if strong:
+            if len(strong) > target:
+                step = max(1, len(strong) // target)
+                selected = list(strong[::step][:target])
+            else:
+                selected = list(strong)
         if len(selected) < target and other:
             need = target - len(selected)
-            step = max(1, len(other) // need)
-            selected += other[::step][:need]
-        selected.sort(key=lambda b: b.time)
+            step = max(1, len(other) // max(1, need))
+            selected += list(other[::step][:need])
+        selected.sort(key=lambda b: float(b.time))
 
         cues: List[SfxCue] = []
         for i, beat in enumerate(selected):
@@ -111,20 +132,56 @@ class SfxEngine:
                 gain_db=DEFAULT_GAIN_DB[kind],
             ))
 
-        # 在高潮（能量/强度最大）的拍点前加一条 riser
-        peak = max(beats, key=lambda b: getattr(b, "strength", 0.0))
-        riser_time = float(peak.time) - RISER_LEAD
-        if riser_time > 0.3:
-            cues.append(SfxCue(
-                time=riser_time,
-                kind="riser",
-                gain_db=DEFAULT_GAIN_DB["riser"],
-            ))
+        # 真实剪辑点上的 whoosh：原来 "whoosh 落在剪辑点" 只是文档说法，
+        # 实际是按强拍下标轮换。这里显式接收切点，隔一个切点放一次。
+        if cut_times:
+            used = [c.time for c in cues]
+            added = 0
+            for j, raw_t in enumerate(cut_times):
+                if len(cues) >= max_cues or added >= 3:
+                    break
+                t = float(raw_t)
+                if t < 0.15:
+                    continue
+                if duration is not None and t > float(duration) - 0.15:
+                    continue
+                if j % 2:
+                    continue
+                if any(abs(t - u) < 0.15 for u in used):
+                    continue
+                cues.append(SfxCue(
+                    time=t, kind="whoosh",
+                    gain_db=DEFAULT_GAIN_DB["whoosh"],
+                ))
+                used.append(t)
+                added += 1
 
-        # 解析素材路径并排序
+        # 在高潮（强度最大）的拍点前加一条 riser；必须落在成片内
+        if len(cues) < max_cues:
+            peak = max(beats, key=lambda b: getattr(b, "strength", 0.0))
+            riser_time = float(peak.time) - RISER_LEAD
+            if riser_time > 0.3:
+                if duration is None or riser_time < float(duration) - 0.05:
+                    cues.append(SfxCue(
+                        time=riser_time,
+                        kind="riser",
+                        gain_db=DEFAULT_GAIN_DB["riser"],
+                    ))
+
+        # 最终再按成片时长过滤一次，并去掉几乎同时的重复 cue
+        if duration is not None and duration > 0:
+            cues = [c for c in cues if 0.0 <= c.time < float(duration) - 0.02]
+        cues.sort(key=lambda c: c.time)
+        deduped: List[SfxCue] = []
+        for cue in cues:
+            if deduped and abs(cue.time - deduped[-1].time) < 0.02:
+                continue
+            deduped.append(cue)
+        cues = deduped[:max_cues]
+
+        # 解析素材路径
         for cue in cues:
             cue.asset_path = self.library.get(cue.kind)
-        cues.sort(key=lambda c: c.time)
         return cues
 
     # ------------------------------------------------------------------- mix

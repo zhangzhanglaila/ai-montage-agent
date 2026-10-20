@@ -701,6 +701,13 @@
         <!-- 3. 风格 -->
         <div class="card" style="position:relative">
             <h2><span class="num">3</span> 风格模板</h2>
+            <div class="form-group" style="margin-bottom:14px;">
+                <label>想要的效果（一句话）</label>
+                <input type="text" id="effect-prompt" placeholder="例如：动漫高燃，10秒，带音效，不要黑场，只留 BGM">
+                <p style="font-size:0.8em; color:#888; margin-top:6px;">
+                    会映射到风格 / 音效 / 镜头密度 / 时长；下面手动选的更具体设置优先。
+                </p>
+            </div>
             <div class="style-grid" id="style-grid">
                 <!-- JS 动态渲染 -->
             </div>
@@ -826,6 +833,66 @@
                         <label>对白闪避（有人声时自动降低 BGM）</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="enable-ducking">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 音效卡点 -->
+                <div class="form-group">
+                    <div class="toggle-row">
+                        <label>音效卡点（强拍 impact / 切点 whoosh）</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="enable-sfx">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 镜头密度 -->
+                <div class="form-group">
+                    <label>镜头密度 / 成片长度</label>
+                    <select id="shot-density" style="width:100%; padding:8px 10px; background:#fff; border:2px solid #000; border-radius:4px; font-size:0.88em; font-family:inherit;">
+                        <option value="standard" selected>标准（默认，镜头间留 1s 间隔）</option>
+                        <option value="dense">密集（更多镜头，间隔 0.5s）</option>
+                        <option value="max">极密（尽量用满素材，间隔 0）</option>
+                    </select>
+                </div>
+
+                <!-- 目标时长 -->
+                <div class="form-group">
+                    <label>目标时长（秒，0 = 自动）</label>
+                    <input type="number" id="target-duration" value="0" min="0" max="300" step="1">
+                </div>
+
+                <!-- 镜头检测灵敏度 -->
+                <div class="form-group">
+                    <label>镜头检测灵敏度</label>
+                    <select id="detect-threshold" style="width:100%; padding:8px 10px; background:#fff; border:2px solid #000; border-radius:4px; font-size:0.88em; font-family:inherit;">
+                        <option value="0.2" selected>精细（0.2，切得更碎）</option>
+                        <option value="0.35">标准（0.35）</option>
+                        <option value="0.5">动漫 / 快剪（0.5）</option>
+                        <option value="0.6">粗切（0.6）</option>
+                    </select>
+                </div>
+
+                <!-- 静音原声 -->
+                <div class="form-group">
+                    <div class="toggle-row">
+                        <label>静音原声（只保留 BGM / 音效）</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="mute-source">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 自动去黑场 -->
+                <div class="form-group">
+                    <div class="toggle-row">
+                        <label>自动去黑场（检测并删除源黑段）</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="clean-black" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -1188,12 +1255,19 @@
             // 开关
             const enableDucking = document.getElementById("enable-ducking").checked;
             const enableHarmonize = document.getElementById("enable-harmonize").checked;
+            const enableSfx = document.getElementById("enable-sfx").checked;
+            const shotDensity = document.getElementById("shot-density").value;
+            const targetDuration = document.getElementById("target-duration").value;
+            const detectThreshold = document.getElementById("detect-threshold").value;
+            const muteSource = document.getElementById("mute-source").checked;
+            const cleanBlack = document.getElementById("clean-black").checked;
+            const effectPrompt = document.getElementById("effect-prompt").value;
 
             // 增强
             const enhanceChips = document.querySelectorAll(".chip.active");
             const enhanceOptions = Array.from(enhanceChips).map(c => c.dataset.enhance);
 
-            return { transitionPattern, aspectRatio, enableSubtitles, subtitleStyle, subtitleLang, translateLang, colorGrade, enableDucking, enableHarmonize, enhanceOptions };
+            return { transitionPattern, aspectRatio, enableSubtitles, subtitleStyle, subtitleLang, translateLang, colorGrade, enableDucking, enableHarmonize, enableSfx, shotDensity, targetDuration, detectThreshold, muteSource, cleanBlack, effectPrompt, enhanceOptions };
         }
 
         // ===== 上传 & 提交 =====
@@ -1382,6 +1456,13 @@
                 formData.append("color_grade", adv.colorGrade);
                 formData.append("enable_ducking", adv.enableDucking ? "true" : "false");
                 formData.append("enable_harmonize", adv.enableHarmonize ? "true" : "false");
+                formData.append("enable_sfx", adv.enableSfx ? "true" : "false");
+                formData.append("shot_density", adv.shotDensity);
+                formData.append("target_duration", adv.targetDuration);
+                formData.append("detect_threshold", adv.detectThreshold);
+                formData.append("mute_source", adv.muteSource ? "true" : "false");
+                formData.append("clean_black", adv.cleanBlack ? "true" : "false");
+                formData.append("prompt", adv.effectPrompt);
                 formData.append("enhance_options", JSON.stringify(adv.enhanceOptions));
 
                 // 带超时的 fetch（60秒）

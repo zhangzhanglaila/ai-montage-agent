@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -122,6 +123,20 @@ def _print_task_detail(task) -> None:
     payload = task.get("payload") or {}
     brief = json.dumps(payload, ensure_ascii=False)
     print(f"  {'payload':13s}: {brief[:400]}")
+
+
+# 卡点转场的最长时长（秒）。
+# xfade 会吞掉转场时长，导致后面的切点整体提前；这里把转场压到 0.08s，
+# 并用"前一镜头尾部冻结 0.08s"来补偿，使成片总长仍等于时间线标称长度。
+# 0.08s @30fps 约 2~3 帧，肉眼只看到一次很短的柔和交叉，不会出现黑场。
+MAX_BEAT_XFADE = 0.08
+
+# 这些转场会制造黑场/闪黑（实测 circlecrop/rectcrop 中间帧 mean≈0，
+# flash/blur/motion_blur/shake 原先映射到 fadeblack），统一降级为 fade。
+BLACK_UNSAFE_TRANSITIONS = {
+    "fadeblack", "flash", "blur", "motion_blur", "shake",
+    "circlecrop", "rectcrop", "zoom",
+}
 
 
 def _probe_media_duration(path: str) -> float:
@@ -627,32 +642,57 @@ class BeatSyncEngine:
             )
 
             # 画面长度约束（关键）：
-            # 上面的拍数只看歌曲，**不看镜头实际有多少画面**。镜头太短时按拍数渲染，
-            # 画面会早早播完、只能靠渲染期克隆末帧凑时长（实测最坏一段 90% 是静止帧，
-            # 13 段合计约 26%）。这里把拍数压到"画面（按 speed 伸缩后）能撑满的整拍数"；
-            # 0.25 拍是容差（允许 ≤0.12s 的收尾补帧，肉眼不可见）。
-            # 连 1 拍都撑不满的镜头直接跳过，让下一个镜头顶上同一拍。
+            # 优先"降速填满"，而不是"克隆末帧凑时长"。镜头不够长时，把速度降到
+            # min_speed 以上来撑满整拍；连 min_speed 都撑不满才少占一拍/跳过。
+            # 这样卡点处不会冻结，也不会为了凑时长把动作放慢到不可接受。
             avail = self._shot_seconds(shot)
+            min_speed = float(style_cfg.get("speed_range", (0.8, 1.2))[0])
             if avail is not None:
-                fit_beats = int(avail / max(0.1, speed_factor) / beat_interval + 0.25)
+                fit_beats = int(avail / max(0.1, min_speed) / beat_interval + 1e-6)
                 if fit_beats < 1:
                     continue
                 beat_count = min(beat_count, fit_beats)
 
-            # 时长 = N 拍 * 拍间隔（严格量化）
-            duration = beat_count * beat_interval
+            # 时长优先用"实际节拍边界"，而不是 N × 中位拍间隔。
+            # 真实 BGM 的拍间隔并不完全恒定（实测 0.488~0.53s），用中位数
+            # 会让切点逐段积累偏差；用 beats[end_idx] 可保证切点严格落在拍上。
+            end_idx = min(current_beat_idx + beat_count, len(beats) - 1)
+            duration = float(beats[end_idx].time) - float(beat_time)
+            if duration <= 0:
+                duration = beat_count * beat_interval
+
+            # 实际拍边界可能比中位拍更长：按"最低可接受速度"再校验一次
+            if avail is not None:
+                while (duration > 0 and avail / duration < min_speed - 1e-4
+                       and beat_count > 1):
+                    beat_count -= 1
+                    end_idx = min(current_beat_idx + beat_count, len(beats) - 1)
+                    duration = float(beats[end_idx].time) - float(beat_time)
+                if duration <= 0 or avail / duration < min_speed - 1e-4:
+                    continue
+                # 降速填满画面（不冻结），速度不超过当前风格值
+                max_speed = avail / duration
+                speed_factor = max(min_speed, min(speed_factor, max_speed))
 
             # 转场：支持模板系统
             transition_type = self._pick_transition(beat, shot, style, transition_pattern)
+            # 黑场类转场统一降级为 fade（渲染层也会兜底映射）
+            if transition_type in BLACK_UNSAFE_TRANSITIONS:
+                transition_type = "fade"
             if transition_pattern and transition_type != "cut":
                 # 用模板的时长比例
                 dur_ratio = transition_pattern.get(
                     "strong_duration_ratio" if beat.beat_type == "strong" else "weak_duration_ratio",
                     0.5
                 )
-                transition_duration = beat_interval * dur_ratio
+                transition_duration = min(
+                    beat_interval * dur_ratio, MAX_BEAT_XFADE
+                )
             else:
-                transition_duration = beat_interval * 0.5 if transition_type != "cut" else 0.0
+                transition_duration = (
+                    min(beat_interval * 0.5, MAX_BEAT_XFADE)
+                    if transition_type != "cut" else 0.0
+                )
 
             # 创建时间线条目
             entry = TimelineEntry(
@@ -798,9 +838,11 @@ class VideoRenderer:
         self,
         timeline: List[TimelineEntry],
         bgm_path: str,
-        output_path: str
+        output_path: str,
+        bgm_offset: float = 0.0,
+        source_volume: float = 0.2,
     ) -> str:
-        """渲染最终视频（支持转场效果）"""
+        """渲染最终视频（支持转场效果，且不产生黑场）"""
         print(f"  渲染视频...")
 
         # 收集有效的镜头（按时间排序）
@@ -810,12 +852,36 @@ class VideoRenderer:
 
         temp_files = []
 
+        # Step 0: 卡点转场补偿（关键）
+        # xfade 的输出 = 前段 + 后段 - 转场时长，会把后面的切点整体提前。
+        # 这里给"前一镜头"尾部多准备 d 秒（d = 后一镜头的转场时长），
+        # xfade 吃掉 d 后总长不变；新镜头仍然在节拍点开始，转场只发生在
+        # 节拍之后 d 秒内。d 被压到 MAX_BEAT_XFADE，避免长冻结。
+        for i, entry in enumerate(valid_entries):
+            nxt = valid_entries[i + 1] if i + 1 < len(valid_entries) else None
+            if nxt is not None and getattr(nxt, "transition_type", "cut") != "cut":
+                d = float(getattr(nxt, "transition_duration", 0.0) or 0.0)
+                d = max(0.0, min(d, MAX_BEAT_XFADE))
+                if d < 0.03:
+                    # 太短的转场没有意义，直接硬切，避免无谓的冻结/闪烁
+                    nxt.transition_type = "cut"
+                    nxt.transition_duration = 0.0
+
         # Step 1: 截取 + 调整速度（合并为一次 FFmpeg 调用）
         import shutil
         prepared = []
         for idx, entry in enumerate(valid_entries):
+            nxt = valid_entries[idx + 1] if idx + 1 < len(valid_entries) else None
+            d_out = 0.0
+            if nxt is not None and getattr(nxt, "transition_type", "cut") != "cut":
+                d_out = float(getattr(nxt, "transition_duration", 0.0) or 0.0)
             clip_path = self.output_dir / f"clip_{idx}.mp4"
-            self._prepare_clip(entry.shot_path, str(clip_path), entry.duration, entry.speed_factor)
+            # 多出来的 d_out 会让 _prepare_clip 用 tpad 克隆末帧补足；
+            # 0.08s @30fps 约 2~3 帧，只用于转场，不会出现黑场。
+            self._prepare_clip(
+                entry.shot_path, str(clip_path),
+                float(entry.duration) + d_out, entry.speed_factor,
+            )
             temp_files.append(clip_path)
             prepared.append(str(clip_path))
 
@@ -835,23 +901,27 @@ class VideoRenderer:
         temp_files.append(concat_video)
 
         # Step 3: BGM 混音（BGM 为主 + 原始音频低音量叠加）
-        # 先归一化 BGM 音量（-14 LUFS 标准响度）
+        # 先归一化 BGM 音量（-14 LUFS 标准响度）；bgm_offset 用于裁掉前奏，
+        # 让 BGM 的第一个节拍与成片 0s 对齐，而不是在开头补黑场。
         normalized_bgm = self.output_dir / "bgm_normalized.wav"
-        self._normalize_bgm(bgm_path, str(normalized_bgm))
+        self._normalize_bgm(bgm_path, str(normalized_bgm), start=bgm_offset)
         temp_files.append(normalized_bgm)
 
-        # 混音：BGM 100% + 原始音频 20%
+        # 混音：BGM 100% + 原始音频 source_volume（默认 20%，可静音）
         cmd = [
             "ffmpeg", "-y",
             "-i", str(concat_video),
             "-i", str(normalized_bgm),
             "-filter_complex",
-            "[0:a]volume=0.2[orig];[1:a]volume=1.0[bgm];[orig][bgm]amix=inputs=2:duration=shortest:dropout_transition=2[aout]",
+            f"[0:a]volume={max(0.0, float(source_volume))}[orig];"
+            f"[1:a]volume=1.0[bgm];"
+            f"[orig][bgm]amix=inputs=2:duration=shortest:dropout_transition=2[aout]",
             "-map", "0:v:0",
             "-map", "[aout]",
             "-c:v", "copy",
             "-c:a", "aac", "-b:a", "192k",
             "-shortest",
+            "-movflags", "+faststart",
             output_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -867,6 +937,7 @@ class VideoRenderer:
                 "-map", "0:v:0",
                 "-map", "1:a:0",
                 "-shortest",
+                "-movflags", "+faststart",
                 output_path
             ]
             subprocess.run(cmd, capture_output=True, check=True)
@@ -921,6 +992,7 @@ class VideoRenderer:
                 "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30",
                 *maps,
                 "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+                "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                 str(scaled)
             ])
@@ -975,11 +1047,14 @@ class VideoRenderer:
         current_label = "[0:v]"
         current_audio = "[0:a]"
 
+        # 注意：这里**不允许**再映射到 fadeblack。
+        # 原先把 flash/blur/motion_blur/shake 都映射成 fadeblack，成片里会出现
+        # 明显的黑场；用户要求"画面丝滑、不要黑场"，统一改成 fade/dissolve。
         xfade_map = {
             "fade": "fade", "dissolve": "dissolve",
-            "wipe": "wipeleft", "flash": "fadeblack",
-            "zoom": "circlecrop", "blur": "fadeblack",
-            "motion_blur": "fadeblack",
+            "wipe": "wipeleft", "flash": "fade",
+            "zoom": "fade", "blur": "fade",
+            "motion_blur": "fade",
             "wipeleft": "wipeleft", "wiperight": "wiperight",
             "wipeup": "wipeup", "wipedown": "wipedown",
             "slideleft": "slideleft", "slideright": "slideright",
@@ -987,17 +1062,19 @@ class VideoRenderer:
             "smoothleft": "smoothleft", "smoothright": "smoothright",
             "smoothup": "smoothup", "smoothdown": "smoothdown",
             "circleopen": "circleopen", "circleclose": "circleclose",
-            "circlecrop": "circlecrop", "rectcrop": "rectcrop",
+            # circlecrop/rectcrop 实测转场中间整帧接近全黑（mean≈0），
+            # 不能满足"不要黑场"，统一退化成 fade。
+            "circlecrop": "fade", "rectcrop": "fade",
             "diagtl": "diagtl", "diagtr": "diagtr",
             "diagbl": "diagbl", "diagbr": "diagbr",
             "vertopen": "vertopen", "vertclose": "vertclose",
             "horzopen": "horzopen", "horzclose": "horzclose",
             "radial": "radial", "pixelize": "pixelize",
-            "distance": "distance", "fadeblack": "fadeblack",
+            "distance": "distance", "fadeblack": "fade",
             "fadewhite": "fadewhite",
             "hlslice": "hlslice", "hrslice": "hrslice",
             "vuslice": "vuslice", "vdslice": "vdslice",
-            "shake": "fadeblack",
+            "shake": "fade",
         }
 
         for j in range(1, len(indices)):
@@ -1010,7 +1087,9 @@ class VideoRenderer:
             # xfade 要求转场时长 < 参与叠合的两段画面长度，否则输出退化（画面丢失）
             trans_dur = max(0.05, min(trans_dur, 0.9 * min(seg_dur[j], accum_dur)))
 
-            # 转场起点 = 上一段末尾 - 转场时长（xfade 语义：转场结束时正好落在接缝上）
+            # 转场起点 = 上一段（已含 d 秒尾部补偿）末尾 - 转场时长
+            # => 起点正好是标称切点：新镜头在节拍点开始，转场只发生在
+            #    节拍之后 d 秒内，不会把后面的切点整体提前。
             offset = accum_dur - trans_dur
             if offset < 0:
                 offset = max(0.1, accum_dur * 0.5)
@@ -1046,6 +1125,7 @@ class VideoRenderer:
             "-map", "[aout]",
             "-t", f"{accum_dur:.3f}",
             "-c:v", "libx264", "-crf", "23", "-preset", "medium",
+            "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             str(seg_video)
         ])
@@ -1192,14 +1272,21 @@ class VideoRenderer:
         ]
         subprocess.run(cmd, capture_output=True, check=True)
 
-    def _normalize_bgm(self, input_path: str, output_path: str, target_lufs: float = -14.0):
+    def _normalize_bgm(self, input_path: str, output_path: str,
+                       target_lufs: float = -14.0, start: float = 0.0):
         """
         BGM 音量归一化（两遍 loudnorm）
         目标：-14 LUFS（流媒体标准响度）
+
+        start > 0 时从该时间点开始截取 BGM（用于裁掉前奏，把第一个节拍
+        对齐到成片 0s；比"开头补黑场"更符合"无黑场"要求）。
         """
+        start = max(0.0, float(start or 0.0))
+        seek = ["-ss", f"{start:.3f}"] if start > 0.001 else []
+
         # 第一遍：分析
         cmd_analyze = [
-            "ffmpeg", "-y", "-i", input_path,
+            "ffmpeg", "-y", *seek, "-i", input_path,
             "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11:print_format=json",
             "-f", "null", "-"
         ]
@@ -1243,10 +1330,10 @@ class VideoRenderer:
                 f":linear=true"
             )
 
-        # 第二遍：应用归一化
+        # 第二遍：应用归一化；开头做 30ms 淡入，避免裁前奏后出现爆音
         cmd_normalize = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-af", af,
+            "ffmpeg", "-y", *seek, "-i", input_path,
+            "-af", af + ",afade=t=in:st=0:d=0.03",
             "-ar", "44100",
             output_path
         ]
@@ -1254,8 +1341,8 @@ class VideoRenderer:
         if proc.returncode != 0:
             # 最终兜底：仅重采样到 44.1kHz，不做响度归一化，保证流程不中断
             subprocess.run(
-                ["ffmpeg", "-y", "-i", input_path, "-ar", "44100",
-                 "-af", "volume=1.0", output_path],
+                ["ffmpeg", "-y", *seek, "-i", input_path, "-ar", "44100",
+                 "-af", "volume=1.0,afade=t=in:st=0:d=0.03", output_path],
                 capture_output=True, check=True,
             )
 
@@ -1293,7 +1380,145 @@ class MontagePipeline:
         # 时间线数据（供导出使用）
         self._last_timeline = []
         self._last_bgm_path = ""
+        self._last_bgm_offset = 0.0
         self._last_total_duration = 0.0
+
+    # ---- 自动去黑场 ----
+    @staticmethod
+    def _has_audio(path: str) -> bool:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True,
+        )
+        return bool((r.stdout or "").strip())
+
+    @staticmethod
+    def _black_ranges(path: str, min_duration: float = 0.04,
+                      pix_th: float = 0.10):
+        """返回黑场区间 [(start, end), ...]，已合并相邻区间。"""
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", str(path), "-vf",
+             f"blackdetect=d={min_duration}:pix_th={pix_th}",
+             "-an", "-f", "null", "-"],
+            capture_output=True, text=True, errors="ignore",
+        )
+        ranges = []
+        for line in (r.stderr or "").splitlines():
+            m = re.search(r"black_start:([\d.]+)\s+black_end:([\d.]+)", line)
+            if m:
+                ranges.append((float(m.group(1)), float(m.group(2))))
+        merged = []
+        for a, b in ranges:
+            if merged and a <= merged[-1][1] + 0.02:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return merged
+
+    def clean_black_source(self, path: str, margin: float = 0.12,
+                           verbose: bool = True) -> str:
+        """检测并删除源视频里的黑场，返回干净文件路径。
+
+        用户直接上传带黑场过渡的 AMV 时，ShotDetector 会把黑帧一起切进镜头；
+        成片就会出现黑闪。这里先把黑段（前后各留 margin）删掉，再重编码拼接。
+        没有黑场时原样返回，不产生额外转码。
+        """
+        src = Path(path)
+        if not src.exists():
+            return str(src)
+        total = _probe_media_duration(str(src))
+        if total <= 0:
+            return str(src)
+        blacks = self._black_ranges(str(src))
+        if not blacks:
+            return str(src)
+
+        # 构造保留区间（黑段前后各扣 margin，避免边界残黑）
+        keep = []
+        cur = 0.0
+        for a, b in blacks:
+            if a - cur > 0.20:
+                keep.append((cur, max(cur, a - margin)))
+            cur = max(cur, b + margin)
+        if total - cur > 0.20:
+            keep.append((cur, total))
+        if not keep:
+            return str(src)
+
+        out_dir = Path(self.cache_dir) / "clean"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{src.stem}_clean_{int(margin * 1000)}.mp4"
+        if out.exists() and out.stat().st_size > 1000:
+            if not self._black_ranges(str(out)):
+                return str(out)
+
+        has_audio = self._has_audio(str(src))
+        parts = []
+        for i, (a, b) in enumerate(keep):
+            p = out_dir / f"_part_{src.stem}_{i}.mp4"
+            cmd = ["ffmpeg", "-y", "-v", "error",
+                   "-ss", f"{a:.3f}", "-i", str(src), "-t", f"{b - a:.3f}",
+                   "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                   "-pix_fmt", "yuv420p"]
+            if has_audio:
+                cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
+            else:
+                cmd += ["-an"]
+            subprocess.run(cmd + [str(p)], capture_output=True, check=True)
+            parts.append(p)
+
+        def _concat(parts, with_audio: bool) -> bool:
+            ins = []
+            for p in parts:
+                ins += ["-i", str(p)]
+            if with_audio:
+                fc = "".join(f"[{i}:v][{i}:a]" for i in range(len(parts)))
+                fc += f"concat=n={len(parts)}:v=1:a=1[v][a]"
+                maps = ["-map", "[v]", "-map", "[a]",
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
+            else:
+                fc = "".join(f"[{i}:v]" for i in range(len(parts)))
+                fc += f"concat=n={len(parts)}:v=1:a=0[v]"
+                maps = ["-map", "[v]"]
+            cmd = ["ffmpeg", "-y", "-v", "error", *ins,
+                   "-filter_complex", fc, *maps,
+                   "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                   "-pix_fmt", "yuv420p", str(out)]
+            return subprocess.run(cmd, capture_output=True).returncode == 0
+
+        ok = _concat(parts, has_audio)
+        if not ok and has_audio:
+            # 某段没有音轨时，退化成纯视频，保证清理成功
+            for p in parts:
+                p.unlink(missing_ok=True)
+            parts = []
+            for i, (a, b) in enumerate(keep):
+                p = out_dir / f"_part_{src.stem}_{i}.mp4"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-ss", f"{a:.3f}",
+                     "-i", str(src), "-t", f"{b - a:.3f}", "-an",
+                     "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                     "-pix_fmt", "yuv420p", str(p)],
+                    capture_output=True, check=True,
+                )
+                parts.append(p)
+            ok = _concat(parts, False)
+        for p in parts:
+            p.unlink(missing_ok=True)
+        if not ok or not out.exists():
+            return str(src)
+
+        if verbose:
+            clean_dur = _probe_media_duration(str(out))
+            print(f"  去黑场: {src.name} 黑段 {len(blacks)} 个 "
+                  f"{total:.1f}s -> {clean_dur:.1f}s")
+
+        # 边界仍有一两帧残黑时，加大 margin 重试一次
+        if self._black_ranges(str(out)) and margin < 0.30:
+            return self.clean_black_source(str(src), margin=margin + 0.10,
+                                           verbose=verbose)
+        return str(out)
 
     @staticmethod
     def _interval_gap(a: Shot, b: Shot) -> float:
@@ -1525,6 +1750,10 @@ class MontagePipeline:
         narration_duck: bool = True,
         min_shot_gap: float = 1.0,
         visual_dedup_threshold: float = None,
+        max_per_video: int = 15,
+        clean_black: bool = True,
+        target_duration: Optional[float] = None,
+        mute_source_audio: bool = False,
     ) -> str:
         """
         运行完整混剪流程
@@ -1553,6 +1782,13 @@ class MontagePipeline:
             visual_dedup_threshold: 画面级去重的指纹 MSE 阈值（<=0 关闭）。素材片自带
                 片头回顾/闪回时，同一画面在源里出现两次且源区间毫无重叠，区间约束抓不到；
                 默认 200（16x16 灰度尺度，同一画面实测 0~37，不同画面最接近的一对 1319）。
+            max_per_video: 每个源视频最多选多少个高光镜头（默认 15）。
+                想生成更长的混剪可调大，例如 25~30。
+            clean_black: 自动检测并删除源视频里的黑场（默认 True）。
+                直接上传带黑场过渡的 AMV 时，避免成片出现黑闪。
+            target_duration: 目标成片时长（秒）。给定时会在 5~50 个镜头、
+                0~1s 间隔之间自动挑最接近目标时长的组合。
+            mute_source_audio: 是否静音原片音频（只保留 BGM/音效）。
 
         Returns:
             输出文件路径
@@ -1565,6 +1801,17 @@ class MontagePipeline:
         print(f"\n[1/6] 检测镜头 (阈值: {threshold})...")
         if not video_paths:
             raise ValueError("没有可用的视频文件，请检查搜索关键词或上传文件")
+
+        # 自动去黑场：先把源里的黑段删掉，避免黑帧被切进镜头
+        if clean_black:
+            cleaned = []
+            for vp in video_paths:
+                try:
+                    cleaned.append(self.clean_black_source(vp))
+                except Exception as e:
+                    print(f"  去黑场失败（跳过）: {e}")
+                    cleaned.append(vp)
+            video_paths = cleaned
 
         all_shots = []
         for video_idx, video_path in enumerate(video_paths):
@@ -1591,10 +1838,32 @@ class MontagePipeline:
         print("\n[4/6] 分析 BGM...")
         beat_analysis = self.beat_analyzer.analyze(bgm_path)
 
+        # 关键：把 BGM 的第一个节拍对齐到视频 0s。
+        # 原来时间线从 "第一个检测到的节拍"（这首歌是 3.18s）开始，而渲染器
+        # 从 0s 顺序拼接 → 所有画面比音乐早 3.18s；若在开头补黑场又会违反
+        # "不要黑场" 的要求。这里直接裁掉前奏，并同步平移所有节拍/能量/高潮段。
+        bgm_offset = 0.0
+        if beat_analysis.beats:
+            first_beat = min(float(b.time) for b in beat_analysis.beats)
+            if first_beat > 0.05:
+                bgm_offset = first_beat
+                for b in beat_analysis.beats:
+                    b.time = max(0.0, float(b.time) - bgm_offset)
+                beat_analysis.energy_curve = [
+                    {"time": max(0.0, float(e["time"]) - bgm_offset),
+                     "energy": e["energy"]}
+                    for e in beat_analysis.energy_curve
+                ]
+                beat_analysis.drops = [
+                    {"start": max(0.0, float(d["start"]) - bgm_offset),
+                     "end": max(0.0, float(d["end"]) - bgm_offset)}
+                    for d in beat_analysis.drops
+                ]
+                print(f"  BGM 前奏 {bgm_offset:.2f}s 已裁掉（开头无黑场，且画面从第一拍开始）")
+
         # Step 5: 卡点同步
         print("\n[5/6] 卡点同步...")
         # 按 source_video 分组，每视频最多取 top N 个镜头（带源区间间隔约束）
-        max_per_video = 15
         top_shots = self.select_highlight_shots(
             all_shots, max_per_video=max_per_video, min_shot_gap=min_shot_gap,
             visual_dedup_threshold=visual_dedup_threshold)
@@ -1602,12 +1871,44 @@ class MontagePipeline:
             raise ValueError("没有可用的高光镜头")
         timeline = self.sync_engine.sync(top_shots, beat_analysis.beats, style, transition_pattern)
 
+        # 目标时长：在镜头数量 / 源区间间隔之间找最接近的组合
+        if target_duration and timeline:
+            best = timeline
+            best_diff = abs(sum(e.duration for e in best) - float(target_duration))
+            combos = [(5, 1.0), (10, 1.0), (15, 1.0), (20, 0.6),
+                      (30, 0.3), (40, 0.0), (50, 0.0)]
+            for mpv, gap in combos:
+                if mpv == max_per_video and abs(gap - min_shot_gap) < 1e-6:
+                    continue
+                try:
+                    shots_try = self.select_highlight_shots(
+                        all_shots, max_per_video=mpv, min_shot_gap=gap,
+                        visual_dedup_threshold=visual_dedup_threshold,
+                        verbose=False)
+                    tl_try = self.sync_engine.sync(
+                        shots_try, beat_analysis.beats, style, transition_pattern)
+                except Exception:
+                    continue
+                if not tl_try:
+                    continue
+                total = sum(e.duration for e in tl_try)
+                diff = abs(total - float(target_duration))
+                if diff < best_diff:
+                    best, best_diff = tl_try, diff
+                if total >= float(target_duration) * 0.95:
+                    break
+            timeline = best
+            print(f"  目标时长 {target_duration:.1f}s -> "
+                  f"实际 {sum(e.duration for e in timeline):.2f}s"
+                  f"（{len(timeline)} 段）")
+
         if not timeline:
             raise ValueError("时间线为空")
 
         # 存储时间线数据（供导出使用）
         self._last_timeline = timeline
         self._last_bgm_path = bgm_path
+        self._last_bgm_offset = bgm_offset
         self._last_total_duration = sum(e.duration for e in timeline)
 
         # 后处理：色彩协调（渲染前对镜头做，避免双重渲染）
@@ -1632,7 +1933,11 @@ class MontagePipeline:
             output_path = str(out_p)
         else:
             output_path = str(Path(self.output_dir) / output_name)
-        result = self.renderer.render(timeline, bgm_path, output_path)
+        result = self.renderer.render(
+            timeline, bgm_path, output_path,
+            bgm_offset=bgm_offset,
+            source_volume=0.0 if mute_source_audio else 0.2,
+        )
 
         # 后处理：对话闪避
         if enable_ducking:
@@ -1680,13 +1985,20 @@ class MontagePipeline:
             try:
                 from packages.sound_engine import SfxEngine
                 sfx_engine = SfxEngine()
-                cues = sfx_engine.plan(beat_analysis.beats, style=style)
+                # 按**成片实际时长**和**真实切点**选音效；否则长 BGM 的
+                # 前 16 个强拍会全挤在开头，超出成片的部分还会被静默截掉。
+                rendered_duration = _probe_media_duration(result) or self._last_total_duration
+                cut_times = [e.start_time for e in timeline[1:]]
+                cues = sfx_engine.plan(
+                    beat_analysis.beats, style=style,
+                    duration=rendered_duration, cut_times=cut_times,
+                )
                 if cues:
                     sfx_path = output_path.replace(".mp4", "_sfx.mp4")
                     sfx_engine.mix(result, cues, sfx_path)
                     if Path(sfx_path).exists():
                         result = sfx_path
-                    print(f"  已叠加 {len(cues)} 个音效")
+                    print(f"  已叠加 {len(cues)} 个音效（均落在成片 {rendered_duration:.2f}s 内）")
                 else:
                     print("  未规划出音效点（跳过）")
             except Exception as e:
