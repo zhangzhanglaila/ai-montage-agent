@@ -7,7 +7,7 @@
 2. **参数预览（param preview）**：只渲染一小段（默认前 6 秒）、小尺寸、低码率，
    带上当前调色等参数，让用户拖完参数几秒内就能看到效果，不用整片重渲。
 
-缓存目录 ``cache/preview/``，键为内容指纹 —— 源文件改了或参数变了会自动重建。
+缓存目录 ``var/cache/preview/``，键为内容指纹 —— 源文件改了或参数变了会自动重建。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 DEFAULT_WIDTH = 480
 DEFAULT_CRF = 32
 DEFAULT_PRESET = "veryfast"
-CACHE_DIR = Path("cache/preview")
+CACHE_DIR = Path("var/cache/preview")
 
 
 # ------------------------------------------------------------------ 工具

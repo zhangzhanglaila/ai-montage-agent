@@ -80,6 +80,7 @@ shots/
 scenes.csv
 concat_list.txt
 cache/
+var/
 test_dl/
 test_assets/
 uploads/

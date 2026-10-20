@@ -1,8 +1,8 @@
 """镜头索引：建索引、存取、检索。
 
 索引结构：
-    cache/index/shot_index.json   —— 元数据（镜头时间码、代表帧、分数、编码器信息）
-    cache/index/shot_index.npy    —— embedding 矩阵（N x dim，L2 归一化）
+    var/cache/index/shot_index.json   —— 元数据（镜头时间码、代表帧、分数、编码器信息）
+    var/cache/index/shot_index.npy    —— embedding 矩阵（N x dim，L2 归一化）
 
 embedding 单独存 .npy：CLIP 是 512 维，若塞进 JSON 会体积暴涨且难读。
 
@@ -198,7 +198,7 @@ class ShotIndex:
         Args:
             video_path: 源视频
             shots: 已有的镜头列表（对象或 dict，需含 start/end）；None 则自动检测
-            frames_dir: 抽帧目录，默认 ``cache/index/frames/<视频名>``
+            frames_dir: 抽帧目录，默认 ``var/cache/index/frames/<视频名>``
             scene_threshold: 场景切换阈值（越大切得越少）
             fps: 抽帧帧率（挑代表帧用）
             max_shots: 限制镜头数（0 为不限），便于快速试跑
@@ -228,7 +228,7 @@ class ShotIndex:
             return self
 
         # 2) 抽帧（一次解码）
-        frames_dir = frames_dir or str(Path("cache/index/frames") / video.stem)
+        frames_dir = frames_dir or str(Path("var/cache/index/frames") / video.stem)
         frames = extract_frames(str(video), frames_dir, fps=fps)
         print(f"  [索引] 抽到 {len(frames)} 帧用于挑代表帧")
 

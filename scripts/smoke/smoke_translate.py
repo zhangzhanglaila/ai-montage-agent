@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-OUT_DIR = ROOT / "output" / "smoke"
+OUT_DIR = ROOT / "var" / "output" / "smoke"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 极简离线词典：仅用于冒烟，证明"原文/译文"两行都渲染出来

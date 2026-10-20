@@ -4,7 +4,7 @@ WebUI 与 CLI 都从这里取同一个实例，避免各自 new 一份连接导�
 
 后端选择
 --------
-* 默认 **SQLite**（`cache/tasks.db`），离线可用；
+* 默认 **SQLite**（`var/var/cache/tasks.db`），离线可用；
 * 设 ``MONTAGE_TASK_BACKEND=redis`` + ``MONTAGE_REDIS_URL=redis://host:6379/0``
   即切到 Redis（多进程/多机共享任务表），业务代码无需改动。
 """
@@ -19,7 +19,7 @@ from typing import Optional
 from .store import TaskStore
 from .worker import TaskWorker
 
-DEFAULT_DB = "cache/tasks.db"
+DEFAULT_DB = os.path.join(os.environ.get("MONTAGE_VAR_DIR", "var"), "cache", "tasks.db")
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 
 _lock = threading.RLock()

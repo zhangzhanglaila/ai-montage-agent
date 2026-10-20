@@ -20,11 +20,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-OUT_DIR = ROOT / "output" / "demo"
+OUT_DIR = ROOT / "var" / "output" / "demo"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 默认素材：仓库内已有的真实混剪（含真实音频）
-DEFAULT_VIDEO = ROOT / "output" / "test_montage8.mp4"
+DEFAULT_VIDEO = ROOT / "var" / "output" / "test_montage8.mp4"
 
 
 def probe_duration(path: Path) -> float:

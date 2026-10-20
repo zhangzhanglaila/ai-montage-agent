@@ -39,7 +39,7 @@ class BilibiliCrawler:
         "Referer": "https://search.bilibili.com/",
     }
 
-    def __init__(self, cache_dir: str = "cache/bilibili"):
+    def __init__(self, cache_dir: str = "var/cache/bilibili"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 

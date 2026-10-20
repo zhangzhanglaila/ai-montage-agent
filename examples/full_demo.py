@@ -157,7 +157,7 @@ def demo_timeline_export():
     print("    json - 完整元数据")
 
     # 导出示例（不需要实际文件）
-    exporter = TimelineExporter(output_dir="output/demo_export")
+    exporter = TimelineExporter(output_dir="var/output/demo_export")
     tc = exporter._seconds_to_timecode(65.5, 30.0)
     print(f"\n  时间码转换示例: 65.5秒 → {tc}")
 

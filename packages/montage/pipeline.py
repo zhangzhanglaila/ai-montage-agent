@@ -18,6 +18,7 @@ from packages.core_types.models import (
 from .beat import BeatAnalyzer
 from .helpers import _probe_media_duration
 from .highlight import HighlightScorer
+from .paths import CACHE_DIR, OUTPUT_DIR
 from .renderer import VideoRenderer
 from .shot import MotionAnalyzer, ShotDetector
 from .sync import BeatSyncEngine
@@ -30,16 +31,17 @@ _VISUAL_SIG_CACHE: Dict[Any, Any] = {}
 class MontagePipeline:
     """混剪 Pipeline - 真正的端到端流程"""
 
-    def __init__(self, cache_dir: str = "cache", output_dir: str = "output"):
-        self.cache_dir = cache_dir
-        self.output_dir = output_dir
+    def __init__(self, cache_dir: Optional[str] = None,
+                 output_dir: Optional[str] = None):
+        self.cache_dir = cache_dir or str(CACHE_DIR)
+        self.output_dir = output_dir or str(OUTPUT_DIR)
 
-        self.shot_detector = ShotDetector(f"{cache_dir}/shots")
+        self.shot_detector = ShotDetector(f"{self.cache_dir}/shots")
         self.motion_analyzer = MotionAnalyzer()
         self.beat_analyzer = BeatAnalyzer()
         self.scorer = HighlightScorer()
         self.sync_engine = BeatSyncEngine()
-        self.renderer = VideoRenderer(output_dir)
+        self.renderer = VideoRenderer(self.output_dir)
 
         # 时间线数据（供导出使用）
         self._last_timeline = []

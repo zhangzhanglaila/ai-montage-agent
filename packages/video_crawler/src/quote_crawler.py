@@ -66,7 +66,7 @@ def _new_stealth_page(browser):
 class QuoteCrawler:
     """台词搜片段爬虫基类"""
 
-    def __init__(self, output_dir: str = "cache/quotes", headless: bool = True):
+    def __init__(self, output_dir: str = "var/cache/quotes", headless: bool = True):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.headless = headless

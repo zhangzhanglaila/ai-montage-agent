@@ -20,12 +20,11 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from packages.montage.paths import CACHE_DIR, OUTPUT_DIR, UPLOAD_DIR
 from packages.task_queue import get_store, get_worker
 
-UPLOAD_DIR = Path("uploads")
-OUTPUT_DIR = Path("output")
-UPLOAD_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _store():
@@ -231,7 +230,7 @@ def _run_montage_task(task_id: str, params: dict):
         }
         min_shot_gap, max_per_video = density_map.get(shot_density, (1.0, 15))
 
-        pipeline = MontagePipeline(cache_dir="cache", output_dir="output")
+        pipeline = MontagePipeline(cache_dir=str(CACHE_DIR), output_dir=str(OUTPUT_DIR))
         result = pipeline.run(
             video_paths, bgm_path, style, output_name,
             threshold=threshold,

@@ -12,7 +12,7 @@
 
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # 支持的音效类型
 KINDS = ("impact", "whoosh", "riser", "click")
@@ -42,7 +42,10 @@ _SYNTH_RECIPES = {
 class SfxLibrary:
     """音效素材获取器。"""
 
-    def __init__(self, cache_dir: str = "cache/sfx", assets_dir: str = "assets/sfx"):
+    def __init__(self, cache_dir: Optional[str] = None, assets_dir: str = "assets/sfx"):
+        if cache_dir is None:
+            import os
+            cache_dir = str(Path(os.getenv("MONTAGE_VAR_DIR", "var")) / "cache" / "sfx")
         self.cache_dir = Path(cache_dir)
         self.assets_dir = Path(assets_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

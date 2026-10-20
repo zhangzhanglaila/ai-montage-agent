@@ -54,7 +54,7 @@ class YtdlpCrawler:
 
     def __init__(
         self,
-        output_dir: str = "cache/ytdlp",
+        output_dir: str = "var/cache/ytdlp",
         max_duration: float = 600.0,
         min_duration: float = 5.0,
         proxy: Optional[str] = None,

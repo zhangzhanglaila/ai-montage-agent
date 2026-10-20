@@ -3,18 +3,20 @@
 import re
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
 from packages.core_types.models import MotionData, Shot
 
+from .paths import CACHE_DIR
+
 
 class ShotDetector:
     """镜头检测 - 使用 FFmpeg scene detect"""
 
-    def __init__(self, cache_dir: str = "cache/shots"):
-        self.cache_dir = Path(cache_dir)
+    def __init__(self, cache_dir: Optional[str] = None):
+        self.cache_dir = Path(cache_dir) if cache_dir else CACHE_DIR / "shots"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def detect(self, video_path: str, threshold: float = 0.3, video_index: int = 0) -> List[Shot]:

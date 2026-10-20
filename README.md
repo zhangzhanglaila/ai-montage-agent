@@ -268,7 +268,7 @@ ai-montage-agent/
 ├── apps/                    # 入口说明（主入口是 pipeline.py / --webui）
 ├── scripts/                 # smoke/ 冒烟测试 + demo/ 演示
 ├── artifacts/               # 演示样片（gitignored）
-├── cache/ output/ uploads/  # 运行产物（gitignored）
+├── var/                     # 运行产物 cache/output/uploads（gitignored）
 └── tests/                   # pytest
 ```
 
@@ -547,7 +547,7 @@ ai-montage-agent/
 ├── apps/                    # Entry-point notes (main entry: pipeline.py / --webui)
 ├── scripts/                 # smoke/ tests + demo/ samples
 ├── artifacts/               # Demo renders (gitignored)
-├── cache/ output/ uploads/  # Runtime artifacts (gitignored)
+├── var/                     # Runtime artifacts cache/output/uploads (gitignored)
 └── tests/                   # pytest
 ```
 

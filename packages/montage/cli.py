@@ -10,6 +10,7 @@ from .helpers import (
     _parse_ratio, _print_task_detail, _print_task_table,
     _probe_media_duration, _ratio_suffix,
 )
+from .paths import OUTPUT_DIR
 from .pipeline import MontagePipeline
 
 
@@ -104,9 +105,9 @@ def main():
                         help="多轨混音计划(JSON)：人声/BGM/音效独立增益+自动闪避；"
                              "spec 内不写 video 时自动以本次成片为底")
     parser.add_argument("--webui", action="store_true", help="启动 WebUI 界面")
-    parser.add_argument("--index-shots", type=str, nargs="?", const="cache/index/shot_index.json",
+    parser.add_argument("--index-shots", type=str, nargs="?", const="var/cache/index/shot_index.json",
                         default=None, metavar="PATH",
-                        help="为 --movies 建立语义镜头索引并保存（默认 cache/index/shot_index.json）")
+                        help="为 --movies 建立语义镜头索引并保存（默认 var/cache/index/shot_index.json）")
     parser.add_argument("--query-shots", type=str, default=None,
                         help="语义检索镜头，如 '明亮的画面'（需先建索引；配合 --index-shots 指定索引路径）")
     parser.add_argument("--index-top-k", type=int, default=10, help="检索返回条数（默认 10）")
@@ -118,7 +119,7 @@ def main():
 
     # ---- 任务队列管理（持久化任务表，不跑混剪）----
     parser.add_argument("--task-db", type=str, default=None, metavar="PATH",
-                        help="任务库路径（默认 cache/tasks.db 或环境变量 MONTAGE_TASK_DB）")
+                        help="任务库路径（默认 var/var/cache/tasks.db 或环境变量 MONTAGE_TASK_DB）")
     parser.add_argument("--task-list", action="store_true", help="列出持久化任务")
     parser.add_argument("--task-status", type=str, default=None,
                         choices=["pending", "queued", "running", "done", "error", "canceled"],
@@ -227,7 +228,7 @@ def main():
     # 镜头语义检索模式
     if args.query_shots:
         from packages.shot_index import get_embedder, ShotIndex, ShotRetriever, format_hits
-        index_path = args.index_shots or "cache/index/shot_index.json"
+        index_path = args.index_shots or "var/cache/index/shot_index.json"
         if not Path(index_path).exists():
             print(f"索引不存在: {index_path}\n请先用 --movies xxx --index-shots {index_path} 建索引")
             return
@@ -339,7 +340,7 @@ def main():
         if TtsEngine.available():
             try:
                 tts = TtsEngine(voice=args.voice)
-                narration_path = "output/narration.mp3"
+                narration_path = str(OUTPUT_DIR / "narration.mp3")
                 tts.synthesize(script_text, narration_path)
                 narration_audio = narration_path
                 print(f"  旁白音频: {narration_path}（音色: {tts.voice}）")

@@ -2,19 +2,20 @@
 
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from packages.core_types.models import TimelineEntry
 
 from .helpers import _probe_media_duration, _safe_float
+from .paths import OUTPUT_DIR
 from .sync import BLACK_UNSAFE_TRANSITIONS, MAX_BEAT_XFADE
 
 
 class VideoRenderer:
     """视频渲染器"""
 
-    def __init__(self, output_dir: str = "output"):
-        self.output_dir = Path(output_dir)
+    def __init__(self, output_dir: Optional[str] = None):
+        self.output_dir = Path(output_dir) if output_dir else OUTPUT_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def render(

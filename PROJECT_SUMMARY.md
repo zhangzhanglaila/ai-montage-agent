@@ -115,7 +115,7 @@ ai-montage-agent/
 ├── tests/                   # pytest
 ├── docs/                    # 文档
 ├── artifacts/               # 演示样片（gitignored）
-├── cache/ output/ uploads/  # 运行产物（gitignored）
+├── var/                     # 运行产物 cache/output/uploads（gitignored）
 ├── README.assets/           # README 图片
 ├── pyproject.toml
 ├── Makefile

@@ -288,7 +288,7 @@ class SubjectTracker:
         if duration > 0 and duration * fps > max_samples:
             fps = max(0.5, max_samples / duration)
 
-        tmp_dir = tmp_dir or str(Path("cache/track") / Path(video_path).stem)
+        tmp_dir = tmp_dir or str(Path("var/cache/track") / Path(video_path).stem)
         frames = self._extract(video_path, tmp_dir, fps)
         if not frames:
             return None

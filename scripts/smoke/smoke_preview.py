@@ -24,9 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 REAL_CANDIDATES = [
-    ROOT / "output" / "test_montage8.mp4",
-    ROOT / "output" / "demo_final.mp4",
-    ROOT / "output" / "test_montage.mp4",
+    ROOT / "var" / "output" / "test_montage8.mp4",
+    ROOT / "var" / "output" / "demo_final.mp4",
+    ROOT / "var" / "output" / "test_montage.mp4",
 ]
 
 

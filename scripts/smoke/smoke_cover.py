@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-OUT_DIR = ROOT / "output" / "smoke"
+OUT_DIR = ROOT / "var" / "output" / "smoke"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

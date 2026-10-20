@@ -63,7 +63,7 @@ STYLE_KEYWORDS = {
 class BgmCrawler:
     """BGM 爬虫"""
 
-    def __init__(self, cache_dir: str = "cache/bgm"):
+    def __init__(self, cache_dir: str = "var/cache/bgm"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 

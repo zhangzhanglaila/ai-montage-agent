@@ -59,6 +59,10 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["var", "artifacts", "cache", "output", ".git", "__pycache__"]
+
 [tool.black]
 line-length = 88
 target-version = ["py310"]

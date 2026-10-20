@@ -33,7 +33,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-OUT_DIR = ROOT / "output" / "smoke" / "transition_audio"
+OUT_DIR = ROOT / "var" / "output" / "smoke" / "transition_audio"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TONE_A = 440.0     # 源 A 的主频

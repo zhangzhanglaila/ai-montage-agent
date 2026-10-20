@@ -37,7 +37,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-OUT_DIR = ROOT / "output" / "smoke" / "visual_dedup"
+OUT_DIR = ROOT / "var" / "output" / "smoke" / "visual_dedup"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FPS = 25

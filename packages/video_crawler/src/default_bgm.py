@@ -95,7 +95,7 @@ def generate_default_bgm(
         输出文件路径
     """
     if output_path is None:
-        cache_dir = Path("cache/bgm")
+        cache_dir = Path("var/cache/bgm")
         cache_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(cache_dir / f"default_{style}.wav")
 
@@ -170,7 +170,7 @@ def generate_default_bgm(
 
 def get_default_bgm_path(style: str = "dynamic") -> str:
     """获取默认 BGM 路径（如不存在则生成）"""
-    cache_dir = Path("cache/bgm")
+    cache_dir = Path("var/cache/bgm")
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = str(cache_dir / f"default_{style}.wav")
 

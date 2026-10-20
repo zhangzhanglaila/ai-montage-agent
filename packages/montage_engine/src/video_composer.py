@@ -45,7 +45,7 @@ class VideoComposer:
         self,
         transition_engine: Optional[TransitionEngine] = None,
         ffmpeg_path: str = "ffmpeg",
-        output_dir: str = "cache/temp"
+        output_dir: str = "var/cache/temp"
     ):
         self.transition_engine = transition_engine or TransitionEngine(ffmpeg_path)
         self.ffmpeg_path = ffmpeg_path

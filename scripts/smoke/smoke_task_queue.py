@@ -31,7 +31,7 @@ from packages.task_queue import (  # noqa: E402
     TaskWorker,
 )
 
-OUT_DIR = ROOT / "output" / "smoke"
+OUT_DIR = ROOT / "var" / "output" / "smoke"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

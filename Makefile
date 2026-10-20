@@ -31,7 +31,7 @@ demo:
 
 # 清理临时文件
 clean:
-	rm -rf temp/ output/ cache/ uploads/ __pycache__ .pytest_cache
+	rm -rf temp/ var/ __pycache__ .pytest_cache
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 

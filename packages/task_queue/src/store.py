@@ -88,7 +88,7 @@ def _loads(text: Optional[str], default: Any) -> Any:
 class TaskStore:
     """SQLite 任务表。"""
 
-    def __init__(self, db_path: str | Path = "cache/tasks.db",
+    def __init__(self, db_path: str | Path = "var/var/cache/tasks.db",
                  backoff_base: float = 2.0, backoff_cap: float = 60.0,
                  clock=time.time):
         self.db_path = str(db_path)

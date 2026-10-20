@@ -22,7 +22,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-OUT = ROOT / "output" / "smoke" / "beat_sync"
+OUT = ROOT / "var" / "output" / "smoke" / "beat_sync"
 OUT.mkdir(parents=True, exist_ok=True)
 
 FPS = 25
