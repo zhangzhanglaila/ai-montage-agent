@@ -9,6 +9,9 @@
 
 > **AI 自动影视混剪 Agent** —— 输入视频 + BGM，自动生成卡点混剪。<br>
 > **AI-powered auto video-montage agent** — feed it clips + music, get a beat-synced edit.
+>
+> 工程实现是确定性混剪流水线（镜头/节拍/卡点/渲染），LLM 仅用于可选的参数解析，不是自主 Agent。<br>
+> Under the hood this is a deterministic montage pipeline; the LLM only parses optional parameters.
 
 **语言 / Language:** [简体中文](#简体中文) · [English](#english)
 
@@ -32,17 +35,19 @@
 | BGM 节拍分析 | librosa 检测节拍/能量/高潮段 | ✅ |
 | 高光评分 | 5 维评分（运动/镜头多样性/表情/运镜/音频） | ✅ |
 | 卡点同步 | 镜头与节拍对齐，强弱拍分级 | ✅ |
-| 素材搜索 | B站/YouTube/台词搜索等自动下载 | ✅ |
+| 素材搜索 | B站/PlayPhrase 可直接搜；YouTube/其他源见下方状态 | ⚠️ 部分可用 |
 | 风格模板 | 11 种预设风格（Vlog/纪录片/婚礼/游戏等） | ✅ |
 | 视频增强 | 防抖/降噪/调色 | ✅ |
 | 自动裁剪 | 智能跟踪主体，横屏转竖屏 | ✅ |
 | 对白闪避 | BGM 自动避让人声 | ✅ |
 | 色彩和谐 | 多片段亮度统一 | ✅ |
-| 字幕生成 | Whisper 语音转字幕，5 种风格 | ✅ |
-| LLM 控制 | 自然语言描述 → 剪辑指令 | ✅ |
+| 字幕生成 | Whisper 语音转字幕，8 种风格 | ⚠️ 需可选安装 Whisper |
+| LLM 控制 | 自然语言描述 → 剪辑参数（CLI 可选） | ⚠️ 可选，需 API/Ollama |
 | 时间轴导出 | EDL/CSV/JSON/XML/OTIO | ✅ |
 | 丰富转场 | dissolve/zoom/shake/wipe 等 10+ 种 | ✅ |
 | WebUI | FastAPI + B站漫画风格前端 | ✅ |
+
+> “部分可用”指 PlayPhrase/B站可直接搜；YouTube/Dailymotion 需代理，抖音/西瓜/AcFun/Vimeo 目前仅支持直链，YARN/找台词网不可用。
 
 ## 快速开始
 
@@ -96,7 +101,7 @@ python pipeline.py \
   --output my_montage.mp4
 ```
 
-Remix 别人的混剪：
+二次剪辑（请确认素材授权）：
 
 ```bash
 python pipeline.py \
@@ -202,7 +207,7 @@ python pipeline.py --webui
 | `--output` | 输出文件名 | `final.mp4` |
 | `--threshold` | 镜头检测灵敏度（0.01~1.0，越小切得越细） | `0.2` |
 | `--prompt` | 自然语言描述 | - |
-| `--subtitles` | 字幕风格（`none`/`tiktok`/`youtube`/`minimal`/`cinematic`） | `none` |
+| `--subtitles` | 字幕风格（`none`/`tiktok`/`youtube`/`minimal`/`karaoke`/`bold`/`cinematic`/`bilingual`） | `none` |
 | `--enhance` | 视频增强（`stabilize`/`denoise`/`color-grade`/`auto-reframe`） | - |
 | `--export-timeline` | 导出时间轴（`edl`/`csv`/`json`/`xml`/`otio`） | - |
 | `--webui` | 启动 WebUI 界面 | - |
@@ -225,26 +230,28 @@ python pipeline.py --webui
 
 ## 素材来源
 
-| 来源 | 类型 | 说明 |
-|------|------|------|
-| `playphrase` | 电影原片（推荐） | 3900 万+ 英文台词片段，无水印，需 Playwright |
-| `quodb` | 电影台词库 | 提供台词 + 电影 + 时间码，需配合其他源下载视频 |
-| `bilibili` | 影视/二创 | B站视频，可能有作者水印 |
-| `youtube` | 全品类 | 需要能访问 YouTube + 登录 cookies |
-| `dailymotion` | 全品类 | 国际视频平台 |
-| `douyin` | 短视频 | 抖音视频 |
-| `ixigua` | 影视/综艺 | 西瓜视频 |
-| `acfun` | 动漫/二创 | AcFun 弹幕视频 |
-| `vimeo` | 创意短片 | 高质量创意视频 |
-| `yarn` | 台词搜索 | 英文台词搜片段（需 Playwright） |
-| `zhaotaici` | 台词搜索 | 中文台词搜片段（需 Playwright） |
+| 来源 | 类型 | 状态 | 说明 |
+|------|------|------|------|
+| `playphrase` | 电影原片（推荐） | ✅ 可用 | 3900 万+ 英文台词片段，无水印，需 Playwright + Chrome |
+| `quodb` | 电影台词库 | ⚠️ 仅元数据 | 提供台词 + 电影 + 时间码，不提供视频下载 |
+| `bilibili` | 影视/二创 | ✅ 可用 | 走 playurl API 下载；可能有作者水印 |
+| `youtube` | 全品类 | ⚠️ 需代理 | 需要能访问 YouTube + 登录 cookies |
+| `dailymotion` | 全品类 | ⚠️ 需网络 | 国际视频平台，当前网络可能超时 |
+| `douyin` | 短视频 | ⚠️ 仅直链 | 不支持关键词搜索，当前 UI/CLI 无 URL 输入 |
+| `ixigua` | 影视/综艺 | ⚠️ 仅直链 | 不支持关键词搜索，当前 UI/CLI 无 URL 输入 |
+| `acfun` | 动漫/二创 | ⚠️ 仅直链 | 不支持关键词搜索，当前 UI/CLI 无 URL 输入 |
+| `vimeo` | 创意短片 | ⚠️ 仅直链 | 不支持关键词搜索，当前 UI/CLI 无 URL 输入 |
+| `yarn` | 台词搜索 | ❌ 不可用 | Cloudflare 403 |
+| `zhaotaici` | 台词搜索 | ❌ 不可用 | SSL 错误，站点基本下线 |
 
-台词搜索源说明：YARN / PlayPhrase / QuoDB / 找台词网 需要安装 Playwright，这些站点有 Cloudflare 反爬保护，必须用浏览器自动化。
+台词源 PlayPhrase / QuoDB 需要安装 Playwright，并使用系统已安装的 Chrome：
 
 ```bash
 pip install playwright
 # 使用系统已安装的 Chrome 浏览器，无需额外下载 Chromium
 ```
+
+> 素材版权归原作者所有，爬取/下载不等于获得授权；发布或商用前请确认权利。
 
 ## 项目结构
 
@@ -276,14 +283,14 @@ ai-montage-agent/
 
 - **视频处理**：FFmpeg、OpenCV
 - **音频分析**：librosa
-- **字幕**：openai-whisper / faster-whisper
-- **LLM**：OpenAI 兼容 API（支持 Ollama 本地部署）
+- **字幕**：openai-whisper / faster-whisper（可选）
+- **LLM**：OpenAI 兼容 API（可选，支持 Ollama 本地部署）
 - **WebUI**：FastAPI + SSE
 - **素材爬取**：yt-dlp + B站 API + Playwright（台词搜索）
 
 ## 许可证
 
-[MIT License](#许可证)
+[MIT License](LICENSE)
 
 [⬆ 返回顶部 / Back to top](#ai-montage-agent)
 
@@ -311,17 +318,19 @@ ai-montage-agent/
 | BGM beat analysis | librosa detects beats / energy / drops | ✅ |
 | Highlight scoring | 5-axis scoring (motion / shot variety / faces / camera / audio) | ✅ |
 | Beat sync | Shots aligned to beats with strong/weak grading | ✅ |
-| Clip search | Auto-download from Bilibili / YouTube / quote search | ✅ |
+| Clip search | Bilibili / PlayPhrase work directly; other sources vary (see below) | ⚠️ Partial |
 | Style templates | 11 presets (Vlog / documentary / wedding / gaming, etc.) | ✅ |
 | Video enhancement | Stabilize / denoise / color grade | ✅ |
 | Auto-reframe | Subject tracking, landscape → portrait | ✅ |
 | Dialogue ducking | BGM auto-ducks under speech | ✅ |
 | Color harmonizer | Brightness matching across clips | ✅ |
-| Subtitles | Whisper speech-to-caption, 5 styles | ✅ |
-| LLM control | Natural language → edit instructions | ✅ |
+| Subtitles | Whisper speech-to-caption, 8 styles | ⚠️ Optional Whisper install |
+| LLM control | Natural language → edit parameters (CLI, optional) | ⚠️ Optional, needs API/Ollama |
 | Timeline export | EDL / CSV / JSON / XML / OTIO | ✅ |
 | Rich transitions | dissolve / zoom / shake / wipe, 10+ types | ✅ |
 | WebUI | FastAPI + Bilibili-comic-style frontend | ✅ |
+
+> “Partial” means PlayPhrase/Bilibili work directly; YouTube/Dailymotion need a proxy, Douyin/Xigua/AcFun/Vimeo are direct-URL only, and YARN/Zhaotaici are unavailable.
 
 ## Quick Start
 
@@ -375,7 +384,7 @@ python pipeline.py \
   --output my_montage.mp4
 ```
 
-Remix someone else's montage:
+Re-edit existing footage (make sure you have the rights):
 
 ```bash
 python pipeline.py \
@@ -481,7 +490,7 @@ python pipeline.py --webui
 | `--output` | Output filename | `final.mp4` |
 | `--threshold` | Shot detection sensitivity (0.01~1.0, lower = finer cuts) | `0.2` |
 | `--prompt` | Natural-language description | - |
-| `--subtitles` | Subtitle style (`none`/`tiktok`/`youtube`/`minimal`/`cinematic`) | `none` |
+| `--subtitles` | Subtitle style (`none`/`tiktok`/`youtube`/`minimal`/`karaoke`/`bold`/`cinematic`/`bilingual`) | `none` |
 | `--enhance` | Enhancements (`stabilize`/`denoise`/`color-grade`/`auto-reframe`) | - |
 | `--export-timeline` | Timeline export (`edl`/`csv`/`json`/`xml`/`otio`) | - |
 | `--webui` | Launch the WebUI | - |
@@ -504,26 +513,28 @@ Style presets:
 
 ## Sources
 
-| Source | Type | Notes |
-|--------|------|-------|
-| `playphrase` | Original film clips (recommended) | 39M+ English quote clips, no watermark, needs Playwright |
-| `quodb` | Movie quote database | Quotes + film + timecode; pair with another source to download video |
-| `bilibili` | Film / fan edits | Bilibili videos, may carry creator watermarks |
-| `youtube` | All categories | Requires YouTube access + login cookies |
-| `dailymotion` | All categories | International video platform |
-| `douyin` | Short-form | Douyin videos |
-| `ixigua` | Film / variety | Xigua Video |
-| `acfun` | Anime / fan edits | AcFun danmaku videos |
-| `vimeo` | Creative shorts | High-quality creative videos |
-| `yarn` | Quote search | English quote clip search (needs Playwright) |
-| `zhaotaici` | Quote search | Chinese quote clip search (needs Playwright) |
+| Source | Type | Status | Notes |
+|--------|------|--------|-------|
+| `playphrase` | Original film clips (recommended) | ✅ Available | 39M+ English quote clips, no watermark, needs Playwright + Chrome |
+| `quodb` | Movie quote database | ⚠️ Metadata only | Quotes + film + timecode; no video download |
+| `bilibili` | Film / fan edits | ✅ Available | Downloads via playurl API; may carry creator watermarks |
+| `youtube` | All categories | ⚠️ Proxy required | Requires YouTube access + login cookies |
+| `dailymotion` | All categories | ⚠️ Network required | May time out on the current network |
+| `douyin` | Short-form | ⚠️ Direct URL only | No keyword search; UI/CLI has no URL input yet |
+| `ixigua` | Film / variety | ⚠️ Direct URL only | No keyword search; UI/CLI has no URL input yet |
+| `acfun` | Anime / fan edits | ⚠️ Direct URL only | No keyword search; UI/CLI has no URL input yet |
+| `vimeo` | Creative shorts | ⚠️ Direct URL only | No keyword search; UI/CLI has no URL input yet |
+| `yarn` | Quote search | ❌ Unavailable | Cloudflare 403 |
+| `zhaotaici` | Quote search | ❌ Unavailable | SSL error; site effectively down |
 
-Quote-search sources (YARN / PlayPhrase / QuoDB / Zhaotaici) require Playwright — these sites use Cloudflare anti-scraping, so browser automation is mandatory.
+PlayPhrase / QuoDB require Playwright and the system-installed Chrome:
 
 ```bash
 pip install playwright
 # Uses the system-installed Chrome browser; no extra Chromium download needed
 ```
+
+> All footage remains the property of its original creator. Crawling/downloading does not grant a license; clear the rights before publishing or commercial use.
 
 ## Project Structure
 
@@ -555,14 +566,14 @@ ai-montage-agent/
 
 - **Video processing**: FFmpeg, OpenCV
 - **Audio analysis**: librosa
-- **Subtitles**: openai-whisper / faster-whisper
-- **LLM**: OpenAI-compatible API (supports local Ollama)
+- **Subtitles**: openai-whisper / faster-whisper (optional)
+- **LLM**: OpenAI-compatible API (optional, supports local Ollama)
 - **WebUI**: FastAPI + SSE
 - **Clip crawling**: yt-dlp + Bilibili API + Playwright (quote search)
 
 ## License
 
-MIT License
+[MIT License](LICENSE)
 
 [⬆ Back to top](#ai-montage-agent)
 
