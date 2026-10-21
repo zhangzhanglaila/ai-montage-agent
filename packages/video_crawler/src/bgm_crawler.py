@@ -12,13 +12,17 @@ BGM 爬虫 - 搜索并下载背景音乐
     path = crawler.search_by_style("intense")  # 按风格自动搜索
 """
 
+import html as html_lib
 import json
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
+
+import requests
 
 
 @dataclass
@@ -66,6 +70,15 @@ class BgmCrawler:
     def __init__(self, cache_dir: str = "var/cache/bgm"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.session = requests.Session()
+        self.session.trust_env = False
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+            "Origin": "https://www.bilibili.com",
+        })
 
     def search(self, keyword: str, max_results: int = 10) -> List[BgmInfo]:
         """在 B站搜索 BGM/音乐，自动尝试多个关键词变体"""
@@ -112,54 +125,104 @@ class BgmCrawler:
         return []
 
     def _search_bilibili(self, keyword: str, page_size: int = 30) -> List[BgmInfo]:
-        """执行一次 B站搜索"""
-        import requests
-
+        """执行一次 B站搜索；API 返回空/风控时降级到搜索页 HTML。"""
         api_url = "https://api.bilibili.com/x/web-interface/wbi/search/type"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://search.bilibili.com/",
-        }
+        if not self.session.cookies.get("buvid3"):
+            self.session.cookies.set("buvid3", uuid.uuid4().hex.upper() + "infoc")
         params = {
             "search_type": "video",
             "keyword": keyword,
             "page": 1,
             "page_size": min(page_size, 50),
+            # 只搜 10 分钟以内，避免整场混剪/循环音乐把 BGM 结果挤掉
+            "duration": 1,
         }
 
         try:
-            resp = requests.get(api_url, params=params, headers=headers, timeout=10,
-                                proxies={"http": None, "https": None})
+            resp = self.session.get(api_url, params=params, timeout=15)
             data = resp.json()
-            if data.get("code") != 0:
-                print(f"  搜索失败: {data.get('message', 'unknown')}")
-                return []
-
-            results = []
-            for v in data.get("data", {}).get("result", []):
-                dur_str = v.get("duration", "0:00")
-                dur_sec = self._parse_duration(dur_str)
-                if dur_sec < 15 or dur_sec > 600:
-                    continue
-
-                title = self._strip_html(v.get("title", ""))
-                # 过滤掉明显不是音乐的结果
-                if any(kw in title for kw in ["直播", "教程", "教学", "解说", "评测", "vlog"]):
-                    continue
-
-                results.append(BgmInfo(
-                    bvid=v.get("bvid", ""),
-                    title=title,
-                    duration=dur_sec,
-                    url=f"https://www.bilibili.com/video/{v.get('bvid', '')}",
-                    author=v.get("author", ""),
-                ))
-
-            return results
-
+            if data.get("code") == 0:
+                results = self._parse_bgm_items(
+                    data.get("data", {}).get("result", []))
+                if results:
+                    return results
         except Exception as e:
-            print(f"  搜索出错: {e}")
+            print(f"  搜索 API 出错: {e}")
+
+        # 风控时 API 会返回 v_voucher / 空 result；搜索页 HTML 仍带结果
+        return self._search_bilibili_html(keyword, page_size)
+
+    def _parse_bgm_items(self, video_list: List[dict]) -> List[BgmInfo]:
+        results = []
+        for v in video_list:
+            dur_str = v.get("duration", "0:00")
+            dur_sec = self._parse_duration(dur_str)
+            if dur_sec < 15 or dur_sec > 600:
+                continue
+            title = self._strip_html(v.get("title", ""))
+            if any(kw in title for kw in ["直播", "教程", "教学", "解说", "评测", "vlog"]):
+                continue
+            bvid = v.get("bvid", "")
+            if not bvid:
+                continue
+            results.append(BgmInfo(
+                bvid=bvid,
+                title=title,
+                duration=dur_sec,
+                url=f"https://www.bilibili.com/video/{bvid}",
+                author=v.get("author", ""),
+            ))
+        return results
+
+    def _search_bilibili_html(self, keyword: str, page_size: int = 30) -> List[BgmInfo]:
+        """从 search.bilibili.com 页面内嵌数据解析结果（API 风控兜底）。"""
+        try:
+            if not self.session.cookies.get("buvid3"):
+                self.session.get("https://www.bilibili.com/", timeout=15)
+            resp = self.session.get(
+                "https://search.bilibili.com/video",
+                params={"keyword": keyword, "duration": 1},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            text = resp.text
+        except Exception as e:
+            print(f"  搜索页兜底失败: {e}")
             return []
+
+        matches = list(re.finditer(r'bvid:"(BV[0-9A-Za-z]+)"', text))
+        results: List[BgmInfo] = []
+        seen = set()
+        for i, m in enumerate(matches):
+            if len(results) >= page_size:
+                break
+            end = matches[i + 1].start() if i + 1 < len(matches) else m.start() + 6000
+            block = text[m.start():end]
+            tm = re.search(r'title:"((?:\\.|[^"\\])*)"', block)
+            dm = re.search(r'duration:"([0-9:]+)"', block)
+            if not dm:
+                continue
+            dur_sec = self._parse_duration(dm.group(1))
+            if dur_sec < 15 or dur_sec > 600:
+                continue
+            bvid = m.group(1)
+            if bvid in seen:
+                continue
+            title = ""
+            if tm:
+                try:
+                    title = json.loads('"' + tm.group(1) + '"')
+                except Exception:
+                    title = tm.group(1)
+            title = html_lib.unescape(self._strip_html(title))
+            if not title or any(kw in title for kw in ["直播", "教程", "教学", "解说", "评测", "vlog"]):
+                continue
+            seen.add(bvid)
+            results.append(BgmInfo(
+                bvid=bvid, title=title, duration=dur_sec,
+                url=f"https://www.bilibili.com/video/{bvid}",
+            ))
+        return results
 
     def search_and_download(self, keyword: str, max_clips: int = 1) -> List[str]:
         """搜索并下载 BGM（返回 MP3 路径列表）"""
