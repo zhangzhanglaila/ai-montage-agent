@@ -195,10 +195,13 @@ def _run_montage_task(task_id: str, params: dict):
                     continue
 
             if not video_paths:
-                if has_cjk and all(s in ("playphrase", "quodb") for s in source_list):
-                    hint = "PlayPhrase/QuoDB 只适合英文台词；中文关键词请勾选 B站。"
+                if "bilibili" in source_list:
+                    hint = (f"已尝试: {', '.join(tried) or '无可用来源'}。"
+                            "B站也没有取到素材，请换关键词或稍后重试。")
+                elif has_cjk:
+                    hint = "中文关键词请勾选 B站；PlayPhrase/QuoDB 只适合英文台词。"
                 else:
-                    hint = f"已尝试: {', '.join(tried) or '无可用来源'}。请换关键词，或勾选 B站/PlayPhrase。"
+                    hint = f"已尝试: {', '.join(tried) or '无可用来源'}。请换关键词或素材来源。"
                 raise TaskError(
                     f"搜索「{query}」未找到结果。{hint}", retryable=False)
 

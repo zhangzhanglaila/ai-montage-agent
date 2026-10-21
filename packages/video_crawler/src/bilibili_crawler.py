@@ -8,6 +8,7 @@ B站视频爬虫 - 搜索关键词并下载视频片段
 yt-dlp 在部分网络环境会被 B 站返回 412；playurl API 更稳。
 """
 
+import html as html_lib
 import json
 import re
 import subprocess
@@ -84,6 +85,11 @@ class BilibiliCrawler:
 
             video_list = (data or {}).get("result") or []
             if not video_list:
+                # API 风控时只返回 v_voucher；搜索页 HTML 里仍有结果
+                html_results = self._search_html(keyword, max_results)
+                if html_results:
+                    print(f"  找到 {len(html_results)} 个视频（搜索页兜底）")
+                    return html_results
                 break
 
             for v in video_list:
@@ -110,6 +116,59 @@ class BilibiliCrawler:
             time.sleep(0.5)
 
         print(f"  找到 {len(results)} 个视频")
+        return results
+
+    def _search_html(self, keyword: str, max_results: int = 20) -> List[VideoInfo]:
+        """从 search.bilibili.com 页面内嵌数据解析结果（API 风控兜底）。"""
+        try:
+            if not self.session.cookies.get("buvid3"):
+                self.session.get("https://www.bilibili.com/", timeout=15)
+            resp = self.session.get(
+                "https://search.bilibili.com/video",
+                params={"keyword": keyword, "duration": 1},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            text = resp.text
+        except Exception as e:
+            print(f"  搜索页兜底失败: {e}")
+            return []
+
+        matches = list(re.finditer(r'bvid:"(BV[0-9A-Za-z]+)"', text))
+        results: List[VideoInfo] = []
+        seen = set()
+        for i, m in enumerate(matches):
+            if len(results) >= max_results:
+                break
+            end = matches[i + 1].start() if i + 1 < len(matches) else m.start() + 6000
+            block = text[m.start():end]
+            tm = re.search(r'title:"((?:\\.|[^"\\])*)"', block)
+            dm = re.search(r'duration:"([0-9:]+)"', block)
+            if not dm:
+                continue
+            dur_sec = self._parse_duration(dm.group(1))
+            if dur_sec < 10 or dur_sec > 600:
+                continue
+            bvid = m.group(1)
+            if bvid in seen:
+                continue
+            title = ""
+            if tm:
+                try:
+                    title = json.loads('"' + tm.group(1) + '"')
+                except Exception:
+                    title = tm.group(1)
+            title = html_lib.unescape(self._strip_html(title))
+            if not title or any(kw in title for kw in ["直播", "教程", "教学", "解说", "评测", "vlog"]):
+                continue
+            seen.add(bvid)
+            results.append(VideoInfo(
+                bvid=bvid,
+                title=title,
+                duration=dm.group(1),
+                duration_seconds=dur_sec,
+                url=self.VIDEO_URL.format(bvid=bvid),
+            ))
         return results
 
     # ----------------------------------------------------------------- download

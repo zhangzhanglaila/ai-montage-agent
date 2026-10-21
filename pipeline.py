@@ -3,6 +3,13 @@
 import sys
 from pathlib import Path
 
+# Windows 控制台默认 GBK，标题里的特殊字符不应让任务直接失败
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from packages.montage import (  # noqa: E402
