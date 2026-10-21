@@ -51,6 +51,7 @@ app = FastAPI(title="AI Montage Agent", version="1.0.0", lifespan=_lifespan)
 _TASK_DEFAULTS = {
     "video_paths": [], "bgm_path": None, "bgm_query": None, "style": "dynamic",
     "output_name": "final.mp4", "query": None, "source": "playphrase",
+    "sources": [],
     "clip_limit": 20, "color_preset": None, "stabilize": False,
     "aspect_ratio": "16/9", "enable_subtitles": False, "subtitle_style": "tiktok",
     "subtitle_lang": "auto", "translate_lang": "", "color_grade": "none",
@@ -133,54 +134,76 @@ def _run_montage_task(task_id: str, params: dict):
             task["progress"] = 10
             task["message"] = f"正在搜索素材: {query}（来源: {source}）..."
 
-            try:
-                if source in ("playphrase", "quodb"):
-                    from packages.video_crawler.src.quote_crawler import create_quote_crawler
-                    crawler = create_quote_crawler(source)
-                    if source == "playphrase":
-                        task["message"] = "正在启动浏览器搜索 PlayPhrase...首次可能较慢"
-                    else:
-                        task["message"] = "正在搜索 QuoDB 台词库..."
-                elif source == "bilibili":
-                    from packages.video_crawler.src.bilibili_crawler import BilibiliCrawler
-                    crawler = BilibiliCrawler()
-                    task["message"] = "正在搜索 B站视频..."
-                elif source == "youtube":
-                    from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
-                    crawler = YtdlpCrawler("youtube")
-                    task["message"] = "正在搜索 YouTube（需要代理）..."
-                elif source == "dailymotion":
-                    from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
-                    crawler = YtdlpCrawler("dailymotion")
-                    task["message"] = "正在搜索 Dailymotion..."
-                else:
-                    from packages.video_crawler.src.bilibili_crawler import BilibiliCrawler
-                    crawler = BilibiliCrawler()
-                    task["message"] = f"正在搜索 {source}..."
+            # 多选来源：按顺序尝试，第一个成功返回片段的来源生效
+            source_list = p.get("sources") or [source]
+            source_list = [s for s in dict.fromkeys(source_list) if s]
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in (query or ""))
+            if has_cjk and "bilibili" in source_list:
+                source_list = ["bilibili"] + [s for s in source_list if s != "bilibili"]
 
+            video_paths = []
+            tried = []
+            for src in source_list:
+                if len(video_paths) >= clip_limit:
+                    break
+                # 中文关键词没必要去英文台词库空跑
+                if has_cjk and src in ("playphrase", "quodb"):
+                    tried.append(f"{src}:跳过")
+                    continue
+                if src == "quodb":
+                    tried.append("quodb:仅元数据")
+                    continue
+
+                task["message"] = f"正在搜索 {query}（来源: {src}）..."
                 task["progress"] = 12
-                video_paths = crawler.search_and_download(query, max_clips=clip_limit)
-
-                if not video_paths:
-                    if source in ("playphrase", "quodb"):
-                        hint = "PlayPhrase/QuoDB 只适合英文台词；中文关键词请选择 B站。"
-                    elif source == "bilibili":
-                        hint = "请换关键词重试，或检查当前网络是否能访问 B站。"
+                try:
+                    if src == "playphrase":
+                        from packages.video_crawler.src.quote_crawler import create_quote_crawler
+                        crawler = create_quote_crawler(src)
+                        task["message"] = "正在启动浏览器搜索 PlayPhrase...首次可能较慢"
+                    elif src == "bilibili":
+                        from packages.video_crawler.src.bilibili_crawler import BilibiliCrawler
+                        crawler = BilibiliCrawler()
+                        task["message"] = "正在搜索 B站视频..."
+                    elif src == "youtube":
+                        from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
+                        crawler = YtdlpCrawler("youtube")
+                        task["message"] = "正在搜索 YouTube（需要代理）..."
+                    elif src == "dailymotion":
+                        from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
+                        crawler = YtdlpCrawler("dailymotion")
+                        task["message"] = "正在搜索 Dailymotion..."
                     else:
-                        hint = "请检查关键词，或换一个素材来源。"
-                    raise TaskError(
-                        f"搜索「{query}」未找到结果（来源: {source}）。{hint}",
-                        retryable=False)
+                        from packages.video_crawler.src.ytdlp_crawler import create_crawler
+                        crawler = create_crawler(src)
+                        task["message"] = f"正在搜索 {src}..."
 
-                task["progress"] = 25
-                task["message"] = f"素材下载完成，共 {len(video_paths)} 个片段 ✓"
+                    remaining = max(1, clip_limit - len(video_paths))
+                    paths = crawler.search_and_download(query, max_clips=remaining)
+                    tried.append(f"{src}:{len(paths or [])}")
+                    for path in paths or []:
+                        if path not in video_paths:
+                            video_paths.append(path)
+                        if len(video_paths) >= clip_limit:
+                            break
+                    # 第一个有结果的源就够用了，避免多选时把每个源都跑一遍
+                    if video_paths:
+                        break
+                except Exception as e:
+                    print(f"[Crawler Error] task={task_id}, source={src}: {e}")
+                    tried.append(f"{src}:失败")
+                    continue
 
-            except TaskError:
-                raise
-            except Exception as e:
-                print(f"[Crawler Error] task={task_id}, source={source}")
-                traceback.print_exc()
-                raise TaskError(f"素材搜索失败: {str(e)}", retryable=True)
+            if not video_paths:
+                if has_cjk and all(s in ("playphrase", "quodb") for s in source_list):
+                    hint = "PlayPhrase/QuoDB 只适合英文台词；中文关键词请勾选 B站。"
+                else:
+                    hint = f"已尝试: {', '.join(tried) or '无可用来源'}。请换关键词，或勾选 B站/PlayPhrase。"
+                raise TaskError(
+                    f"搜索「{query}」未找到结果。{hint}", retryable=False)
+
+            task["progress"] = 25
+            task["message"] = f"素材下载完成，共 {len(video_paths)} 个片段 ✓"
 
         if not video_paths:
             raise TaskError("没有可用的视频文件，请检查搜索关键词", retryable=False)
@@ -374,6 +397,7 @@ async def create_montage(
     output_name: str = Form("final.mp4"),
     query: Optional[str] = Form(None),
     source: str = Form("playphrase"),
+    sources: Optional[str] = Form(None),
     clip_limit: int = Form(20),
     # 高级设置
     aspect_ratio: str = Form("16/9"),
@@ -408,6 +432,21 @@ async def create_montage(
         color_preset = preset_params.get("color_preset")
         stabilize = preset_params.get("stabilize", False)
 
+    allowed_sources = {
+        "playphrase", "quodb", "bilibili", "youtube", "dailymotion",
+        "douyin", "ixigua", "acfun", "vimeo", "yarn", "zhaotaici",
+    }
+    sources_list = []
+    if sources:
+        try:
+            parsed = json.loads(sources)
+            if isinstance(parsed, list):
+                sources_list = [str(s) for s in parsed if str(s) in allowed_sources]
+        except (TypeError, ValueError):
+            sources_list = []
+    if source in allowed_sources and source not in sources_list:
+        sources_list.insert(0, source)
+
     payload = {
         "video_paths": video_paths_list,
         "bgm_path": bgm_path,
@@ -416,6 +455,7 @@ async def create_montage(
         "output_name": output_name,
         "query": query,
         "source": source,
+        "sources": sources_list,
         "clip_limit": clip_limit,
         "color_preset": color_preset,
         "stabilize": stabilize,

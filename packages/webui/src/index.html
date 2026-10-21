@@ -992,7 +992,7 @@
                 const badge = badgeMap[s.status];
                 const disabled = s.status === "unavailable" ? ' class="disabled"' : "";
                 return `<tr${disabled} onclick="toggleSource(${i}, this)">
-                    <td><input type="checkbox" data-index="${i}" ${s.checked ? "checked" : ""} ${s.status === "unavailable" ? "disabled" : ""} onclick="event.stopPropagation()"></td>
+                    <td><input type="checkbox" data-index="${i}" ${s.checked ? "checked" : ""} ${s.status === "unavailable" ? "disabled" : ""} onclick="event.stopPropagation()" onchange="onSourceCheck()"></td>
                     <td class="source-name">${s.name}</td>
                     <td><span class="type-tag">${s.type}</span></td>
                     <td>${s.desc}</td>
@@ -1440,18 +1440,25 @@
                         stopElapsedTimer(); return;
                     }
                     const queryText = query.value.trim();
-                    let chosenSource = selectedSources[0];
-                    // PlayPhrase / QuoDB 只适合英文台词；中文关键词自动切到 B站
-                    if (/[\u4e00-\u9fff]/.test(queryText) &&
-                        ["playphrase", "quodb"].includes(chosenSource)) {
-                        chosenSource = "bilibili";
+                    const isChinese = /[\u4e00-\u9fff]/.test(queryText);
+                    let sourceList = [...selectedSources];
+
+                    if (isChinese && sourceList.includes("bilibili")) {
+                        // 中文优先 B站，避免先去英文台词库空跑
+                        sourceList = ["bilibili", ...sourceList.filter(s => s !== "bilibili")];
+                    } else if (isChinese &&
+                               sourceList.some(s => ["playphrase", "quodb"].includes(s))) {
+                        // 只选了英文台词库时，自动切到 B站
+                        sourceList = ["bilibili"];
                         sources.forEach(s => { s.checked = s.value === "bilibili"; });
                         renderSourceTable();
                         updateSelectedCount();
                         showToast("检测到中文关键词，已自动切换到 B站");
                     }
+
                     formData.append("query", queryText);
-                    formData.append("source", chosenSource);
+                    formData.append("source", sourceList[0]);
+                    formData.append("sources", JSON.stringify(sourceList));
                     formData.append("clip_limit", document.getElementById("clip-limit").value);
                 }
 
