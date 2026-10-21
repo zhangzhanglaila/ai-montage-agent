@@ -162,8 +162,14 @@ def _run_montage_task(task_id: str, params: dict):
                 video_paths = crawler.search_and_download(query, max_clips=clip_limit)
 
                 if not video_paths:
+                    if source in ("playphrase", "quodb"):
+                        hint = "PlayPhrase/QuoDB 只适合英文台词；中文关键词请选择 B站。"
+                    elif source == "bilibili":
+                        hint = "请换关键词重试，或检查当前网络是否能访问 B站。"
+                    else:
+                        hint = "请检查关键词，或换一个素材来源。"
                     raise TaskError(
-                        f"搜索「{query}」未找到结果，请检查关键词或换一个来源试试",
+                        f"搜索「{query}」未找到结果（来源: {source}）。{hint}",
                         retryable=False)
 
                 task["progress"] = 25

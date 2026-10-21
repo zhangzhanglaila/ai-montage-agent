@@ -655,7 +655,7 @@
                 <div class="form-group">
                     <label>素材来源</label>
                     <div class="source-toggle" onclick="toggleSourceTable()">
-                        <span>已选择 <strong id="selected-count">1</strong> 个来源</span>
+                        <span>已选：<strong id="selected-source-label">PlayPhrase</strong></span>
                         <span class="arrow">&#9660;</span>
                     </div>
                     <div class="source-table-wrap" id="source-table-wrap">
@@ -965,9 +965,9 @@
     <script>
         // ===== 素材来源数据 =====
         const sources = [
-            { value: "playphrase", name: "PlayPhrase", type: "电影原片", desc: "3900万+英文台词片段，无水印", status: "recommend", checked: true },
+            { value: "playphrase", name: "PlayPhrase", type: "电影原片", desc: "英文台词片段（中文请选 B站）", status: "recommend", checked: true },
             { value: "quodb", name: "QuoDB", type: "台词库", desc: "精确台词+电影+时间码", status: "ok", checked: false },
-            { value: "bilibili", name: "B站", type: "二创", desc: "B站视频，可能有作者水印", status: "ok", checked: false },
+            { value: "bilibili", name: "B站", type: "二创", desc: "中文/动漫/影视，playurl 下载", status: "ok", checked: false },
             { value: "youtube", name: "YouTube", type: "全品类", desc: "需要代理+登录cookies", status: "limited", checked: false },
             { value: "dailymotion", name: "Dailymotion", type: "全品类", desc: "国际视频平台", status: "limited", checked: false },
             { value: "douyin", name: "抖音", type: "短视频", desc: "不支持搜索，需直接URL", status: "unavailable", checked: false },
@@ -1017,8 +1017,9 @@
         }
 
         function updateSelectedCount() {
-            const count = sources.filter(s => s.checked).length;
-            document.getElementById("selected-count").textContent = count;
+            const names = sources.filter(s => s.checked).map(s => s.name);
+            document.getElementById("selected-source-label").textContent =
+                names.length ? names.join(" / ") : "未选择来源";
         }
 
         function getSelectedSources() {
@@ -1438,8 +1439,19 @@
                         btn.disabled = false; btn.textContent = "开始混剪";
                         stopElapsedTimer(); return;
                     }
-                    formData.append("query", query.value);
-                    formData.append("source", selectedSources[0]);
+                    const queryText = query.value.trim();
+                    let chosenSource = selectedSources[0];
+                    // PlayPhrase / QuoDB 只适合英文台词；中文关键词自动切到 B站
+                    if (/[\u4e00-\u9fff]/.test(queryText) &&
+                        ["playphrase", "quodb"].includes(chosenSource)) {
+                        chosenSource = "bilibili";
+                        sources.forEach(s => { s.checked = s.value === "bilibili"; });
+                        renderSourceTable();
+                        updateSelectedCount();
+                        showToast("检测到中文关键词，已自动切换到 B站");
+                    }
+                    formData.append("query", queryText);
+                    formData.append("source", chosenSource);
                     formData.append("clip_limit", document.getElementById("clip-limit").value);
                 }
 
