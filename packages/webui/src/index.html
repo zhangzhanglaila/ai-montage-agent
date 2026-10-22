@@ -741,32 +741,36 @@
                         </table>
                     </div>
                 </div>
-                <div style="margin-top:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                    <button class="btn btn-secondary btn-small" id="search-materials-btn"
-                            onclick="searchMaterials()">先搜素材 / 挑选</button>
-                    <span id="material-search-status" style="font-size:13px;color:#666;"></span>
+                <div style="margin-top:14px;">
+                    <button class="btn btn-primary" id="search-materials-btn"
+                            onclick="searchMaterials()">① 搜索素材并挑选</button>
+                    <p id="material-search-status" style="font-size:13px;color:#666;margin-top:8px;text-align:center;"></p>
                 </div>
             </div>
         </div>
 
         <!-- 1.5 候选素材 -->
         <div class="card hidden" id="material-section">
-            <h2><span class="num">✂</span> 候选素材 <span id="material-count" style="font-size:0.7em;color:#FB7299;"></span></h2>
+            <h2><span class="num">2</span> 候选素材 <span id="material-count" style="font-size:0.7em;color:#FB7299;"></span></h2>
+            <p style="font-size:13px;color:#666;margin-bottom:12px;">
+                已停在第 2 步：不会自动开始混剪。勾选想用的片段，不需要的可以删掉。
+            </p>
             <div class="material-actions">
                 <button class="btn btn-secondary btn-small" onclick="selectAllMaterials(true)">全选</button>
                 <button class="btn btn-secondary btn-small" onclick="selectAllMaterials(false)">全不选</button>
                 <label class="btn btn-secondary btn-small" for="material-upload">＋ 添加本地视频</label>
                 <input type="file" id="material-upload" accept="video/*" multiple
                        style="display:none" onchange="addLocalMaterials(this)">
-                <span style="font-size:13px;color:#666;">勾选想用的片段；不需要的可以删掉。</span>
             </div>
             <div class="material-grid" id="material-grid"></div>
-            <p id="material-empty" class="hidden" style="color:#888;">还没有候选素材，先点上面的“先搜素材 / 挑选”。</p>
+            <p id="material-empty" class="hidden" style="color:#888;">还没有候选素材，先点上面的“① 搜索素材并挑选”。</p>
+            <button class="btn btn-secondary" style="width:100%;margin-top:16px"
+                    onclick="confirmMaterials()">② 确认素材，继续设置 ↓</button>
         </div>
 
         <!-- 2. BGM -->
-        <div class="card">
-            <h2><span class="num">2</span> 背景音乐</h2>
+        <div class="card" id="bgm-card">
+            <h2><span class="num">3</span> 背景音乐</h2>
             <div class="tab-group">
                 <div class="tab active" onclick="switchBgm('search', this)">搜索 BGM</div>
                 <div class="tab" onclick="switchBgm('upload', this)">本地上传</div>
@@ -791,7 +795,7 @@
 
         <!-- 3. 风格 -->
         <div class="card" style="position:relative">
-            <h2><span class="num">3</span> 风格模板</h2>
+            <h2><span class="num">4</span> 风格模板</h2>
             <div class="form-group" style="margin-bottom:14px;">
                 <label>想要的效果（一句话）</label>
                 <input type="text" id="effect-prompt" placeholder="例如：动漫高燃，10秒，带音效，不要黑场，只留 BGM">
@@ -807,10 +811,10 @@
             <input type="hidden" id="style-preset-value" value="">
         </div>
 
-        <!-- 4. 高级设置 -->
+        <!-- 5. 高级设置 -->
         <div class="card">
             <div class="adv-toggle" onclick="toggleAdvPanel()">
-                <span><span class="num" style="display:inline-flex;width:28px;height:28px;background:#FB7299;color:#fff;font-size:0.85em;font-weight:900;border:2px solid #000;align-items:center;justify-content:center;flex-shrink:0;vertical-align:middle;margin-right:8px;">4</span> 高级设置</span>
+                <span><span class="num" style="display:inline-flex;width:28px;height:28px;background:#FB7299;color:#fff;font-size:0.85em;font-weight:900;border:2px solid #000;align-items:center;justify-content:center;flex-shrink:0;vertical-align:middle;margin-right:8px;">5</span> 高级设置</span>
                 <span class="arrow">&#9660;</span>
             </div>
             <div class="adv-panel" id="adv-panel">
@@ -1014,7 +1018,10 @@
         </div>
 
         <!-- 提交 -->
-        <button class="btn btn-primary" id="submit-btn" onclick="submitTask()">开始混剪</button>
+        <p id="submit-hint" style="text-align:center;font-size:13px;color:#666;margin-bottom:8px;">
+            第 1 步：先搜索并确认素材
+        </p>
+        <button class="btn btn-primary" id="submit-btn" onclick="submitTask()">③ 开始混剪</button>
 
         <!-- 进度 -->
         <div class="card progress-container" id="progress-section">
@@ -1119,6 +1126,7 @@
 
         // ===== 候选素材（先搜再挑） =====
         let materialCandidates = [];
+        let materialsConfirmed = false;
 
         function escapeHtml(s) {
             return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
@@ -1138,6 +1146,30 @@
             return `${m}:${String(s).padStart(2, "0")}`;
         }
 
+        function updateSubmitHint() {
+            const hint = document.getElementById("submit-hint");
+            const selected = materialCandidates.filter(m => m.selected).length;
+            if (!materialCandidates.length) {
+                hint.textContent = "第 1 步：先搜索并挑选素材";
+            } else if (!materialsConfirmed) {
+                hint.textContent = "第 2 步：挑选后点“确认素材，继续设置”";
+            } else {
+                hint.textContent = `第 3 步：用已选 ${selected} 个素材开始混剪`;
+            }
+        }
+
+        function confirmMaterials() {
+            const selected = materialCandidates.filter(m => m.selected);
+            if (!selected.length) {
+                showToast("请至少勾选一个素材");
+                return;
+            }
+            materialsConfirmed = true;
+            updateSubmitHint();
+            showToast(`已确认 ${selected.length} 个素材，继续设置 BGM / 风格`);
+            document.getElementById("bgm-card").scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
         function renderMaterials() {
             const section = document.getElementById("material-section");
             const grid = document.getElementById("material-grid");
@@ -1146,6 +1178,7 @@
             if (!materialCandidates.length) {
                 section.classList.add("hidden");
                 grid.innerHTML = "";
+                updateSubmitHint();
                 return;
             }
             section.classList.remove("hidden");
@@ -1162,6 +1195,7 @@
                         <button class="material-del" onclick="removeMaterial(${i})">删除</button>
                     </div>
                 </div>`).join("");
+            updateSubmitHint();
         }
 
         function setMaterialSelected(index, checked) {
@@ -1193,6 +1227,7 @@
                 });
             }
             input.value = "";
+            materialsConfirmed = false;
             renderMaterials();
             document.getElementById("material-section").scrollIntoView({ behavior: "smooth", block: "start" });
         }
@@ -1230,7 +1265,10 @@
             }
 
             btn.disabled = true;
-            btn.textContent = "搜索中...";
+            btn.textContent = "① 搜索中...";
+            materialsConfirmed = false;
+            materialCandidates = [];
+            renderMaterials();
             status.textContent = "正在搜索素材，B站下载可能需要 1～2 分钟...";
             const fd = new FormData();
             fd.append("query", query.value.trim());
@@ -1249,13 +1287,14 @@
                     if (t.status === "done") {
                         es.close();
                         btn.disabled = false;
-                        btn.textContent = "先搜素材 / 挑选";
+                        btn.textContent = "① 搜索素材并挑选";
                         try {
                             const full = await (await fetch(`/api/task/${data.task_id}`)).json();
                             materialCandidates = ((full.result || {}).candidates || []).map(x => ({ ...x, selected: true }));
+                            materialsConfirmed = false;
                             renderMaterials();
                             status.textContent = materialCandidates.length
-                                ? `找到 ${materialCandidates.length} 个候选，勾选后开始混剪`
+                                ? `已找到 ${materialCandidates.length} 个候选，已停在第 2 步，请挑选后点“确认素材”`
                                 : "没有找到候选素材";
                             document.getElementById("material-section").scrollIntoView({ behavior: "smooth", block: "start" });
                         } catch (err) {
@@ -1264,18 +1303,18 @@
                     } else if (t.status === "error" || t.status === "canceled") {
                         es.close();
                         btn.disabled = false;
-                        btn.textContent = "先搜素材 / 挑选";
+                        btn.textContent = "① 搜索素材并挑选";
                         status.textContent = "❌ " + (t.message || "搜索失败");
                     }
                 };
                 es.onerror = () => {
                     es.close();
                     btn.disabled = false;
-                    btn.textContent = "先搜素材 / 挑选";
+                    btn.textContent = "① 搜索素材并挑选";
                 };
             } catch (e) {
                 btn.disabled = false;
-                btn.textContent = "先搜素材 / 挑选";
+                btn.textContent = "① 搜索素材并挑选";
                 status.textContent = "❌ " + e.message;
             }
         }
@@ -1614,6 +1653,22 @@
 
         // ===== 提交任务 =====
         async function submitTask() {
+            // 搜索模式强制走“先搜素材 → 挑选确认”两步，避免直接开跑
+            if (sourceMode === "search") {
+                if (!materialCandidates.length) {
+                    showToast("请先点“① 搜索素材并挑选”");
+                    document.getElementById("search-materials-btn")
+                        .scrollIntoView({ behavior: "smooth", block: "center" });
+                    return;
+                }
+                if (!materialsConfirmed) {
+                    showToast("请先挑选并点“② 确认素材，继续设置”");
+                    document.getElementById("material-section")
+                        .scrollIntoView({ behavior: "smooth", block: "start" });
+                    return;
+                }
+            }
+
             const btn = document.getElementById("submit-btn");
             btn.disabled = true;
             btn.textContent = "处理中...";
@@ -1638,7 +1693,7 @@
                     if (!bgmFile) {
                         shake(document.getElementById("bgm-upload-section"));
                         showToast("请选择 BGM 文件");
-                        btn.disabled = false; btn.textContent = "开始混剪";
+                        btn.disabled = false; btn.textContent = "③ 开始混剪";
                         stopElapsedTimer(); return;
                     }
                     bgmPath = await uploadBgm(bgmFile);
@@ -1650,7 +1705,7 @@
                     if (videoFiles.length === 0) {
                         shake(document.getElementById("upload-section"));
                         showToast("请选择视频文件");
-                        btn.disabled = false; btn.textContent = "开始混剪";
+                        btn.disabled = false; btn.textContent = "③ 开始混剪";
                         stopElapsedTimer(); return;
                     }
                     videoPaths = await uploadFiles(videoFiles);
@@ -1665,7 +1720,7 @@
                     const selectedMaterials = materialCandidates.filter(m => m.selected);
                     if (!selectedMaterials.length) {
                         showToast("请至少勾选一个候选素材");
-                        btn.disabled = false; btn.textContent = "开始混剪";
+                        btn.disabled = false; btn.textContent = "③ 开始混剪";
                         stopElapsedTimer(); return;
                     }
                     videoPaths = selectedMaterials.map(m => m.path);
@@ -1684,7 +1739,7 @@
                     if (!bgmQuery.value.trim()) {
                         shake(bgmQuery);
                         showToast("请输入 BGM 搜索关键词");
-                        btn.disabled = false; btn.textContent = "开始混剪";
+                        btn.disabled = false; btn.textContent = "③ 开始混剪";
                         stopElapsedTimer(); return;
                     }
                     formData.append("bgm_query", bgmQuery.value);
@@ -1695,13 +1750,13 @@
                     if (!query.value.trim()) {
                         shake(query);
                         showToast("请输入搜索关键词");
-                        btn.disabled = false; btn.textContent = "开始混剪";
+                        btn.disabled = false; btn.textContent = "③ 开始混剪";
                         stopElapsedTimer(); return;
                     }
                     if (selectedSources.length === 0) {
                         shake(document.querySelector(".source-toggle"));
                         showToast("请至少选择一个素材来源");
-                        btn.disabled = false; btn.textContent = "开始混剪";
+                        btn.disabled = false; btn.textContent = "③ 开始混剪";
                         stopElapsedTimer(); return;
                     }
                     const queryText = query.value.trim();
@@ -1762,7 +1817,7 @@
                     document.getElementById("progress-msg").textContent = "出错: " + e.message;
                 }
                 btn.disabled = false;
-                btn.textContent = "开始混剪";
+                btn.textContent = "③ 开始混剪";
             }
         }
 
@@ -1792,7 +1847,7 @@
                     document.getElementById("result-section").classList.add("active");
                     document.getElementById("download-link").href = `/api/download/${taskId}`;
                     document.getElementById("submit-btn").disabled = false;
-                    document.getElementById("submit-btn").textContent = "开始混剪";
+                    document.getElementById("submit-btn").textContent = "③ 开始混剪";
                     showToast("混剪完成! 🎉");
                     loadProxyVideo(taskId);
                 } else if (data.status === "error") {
@@ -1801,7 +1856,7 @@
                     stopElapsedTimer();
                     showToast("❌ " + (data.message || "混剪失败"));
                     document.getElementById("submit-btn").disabled = false;
-                    document.getElementById("submit-btn").textContent = "开始混剪";
+                    document.getElementById("submit-btn").textContent = "③ 开始混剪";
                 }
             };
 
@@ -1816,7 +1871,7 @@
                     showToast("连接中断，请刷新页面重试");
                     document.getElementById("progress-msg").textContent = "⚠️ 进度连接中断";
                     document.getElementById("submit-btn").disabled = false;
-                    document.getElementById("submit-btn").textContent = "开始混剪";
+                    document.getElementById("submit-btn").textContent = "③ 开始混剪";
                 }
             };
         }

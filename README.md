@@ -197,6 +197,12 @@ python pipeline.py --webui
 # 浏览器打开 http://localhost:8000
 ```
 
+WebUI 是两段式，避免爬完直接出片：
+
+1. 输入关键词，点 **① 搜索素材并挑选**
+2. 在候选素材里勾选 / 删除 / 添加本地视频，点 **② 确认素材，继续设置**
+3. 选 BGM、风格，点 **③ 开始混剪**
+
 ## 参数说明
 
 | 参数 | 说明 | 默认值 |
@@ -486,6 +492,12 @@ Launch the WebUI:
 python pipeline.py --webui
 # Open http://localhost:8000 in your browser
 ```
+
+The WebUI is a two-stage flow:
+
+1. Enter a keyword, click **① Search & pick clips**
+2. Select / delete / add local clips, click **② Confirm clips**
+3. Choose BGM and style, click **③ Start montage**
 
 ## Arguments
 
