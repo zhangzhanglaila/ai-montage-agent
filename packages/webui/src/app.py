@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +37,7 @@ async def _lifespan(_app: FastAPI):
     """启动任务 worker（会先续跑上次进程残留的任务），退出时优雅停止。"""
     worker = get_worker()
     worker.register("montage", _run_montage_task)
+    worker.register("materials", _run_materials_task)
     worker.start()
     try:
         yield
@@ -65,6 +66,78 @@ _TASK_DEFAULTS = {
     "clean_black": True,
     "transition_pattern_id": "auto",
 }
+
+
+def _build_source_list(query: str, source: str, sources) -> list:
+    source_list = sources or [source]
+    source_list = [s for s in dict.fromkeys(source_list) if s]
+    has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in (query or ""))
+    if has_cjk and "bilibili" in source_list:
+        source_list = ["bilibili"] + [s for s in source_list if s != "bilibili"]
+    return source_list
+
+
+def _crawl_sources(query: str, source_list: list, clip_limit: int,
+                   task=None, task_id: str = ""):
+    """按顺序尝试多个来源，返回 (下载路径, 尝试记录)。"""
+    has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in (query or ""))
+    video_paths = []
+    tried = []
+    for src in source_list:
+        if len(video_paths) >= clip_limit:
+            break
+        if has_cjk and src in ("playphrase", "quodb"):
+            tried.append(f"{src}:跳过")
+            continue
+        if src == "quodb":
+            tried.append("quodb:仅元数据")
+            continue
+
+        if task is not None:
+            task["message"] = f"正在搜索 {query}（来源: {src}）..."
+            task["progress"] = 12
+        try:
+            if src == "playphrase":
+                from packages.video_crawler.src.quote_crawler import create_quote_crawler
+                crawler = create_quote_crawler(src)
+                if task is not None:
+                    task["message"] = "正在启动浏览器搜索 PlayPhrase...首次可能较慢"
+            elif src == "bilibili":
+                from packages.video_crawler.src.bilibili_crawler import BilibiliCrawler
+                crawler = BilibiliCrawler()
+                if task is not None:
+                    task["message"] = "正在搜索 B站视频..."
+            elif src == "youtube":
+                from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
+                crawler = YtdlpCrawler("youtube")
+                if task is not None:
+                    task["message"] = "正在搜索 YouTube（需要代理）..."
+            elif src == "dailymotion":
+                from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
+                crawler = YtdlpCrawler("dailymotion")
+                if task is not None:
+                    task["message"] = "正在搜索 Dailymotion..."
+            else:
+                from packages.video_crawler.src.ytdlp_crawler import create_crawler
+                crawler = create_crawler(src)
+                if task is not None:
+                    task["message"] = f"正在搜索 {src}..."
+
+            remaining = max(1, clip_limit - len(video_paths))
+            paths = crawler.search_and_download(query, max_clips=remaining)
+            tried.append(f"{src}:{len(paths or [])}")
+            for path in paths or []:
+                if path not in video_paths:
+                    video_paths.append(path)
+                if len(video_paths) >= clip_limit:
+                    break
+            if video_paths:
+                break
+        except Exception as e:
+            print(f"[Crawler Error] task={task_id}, source={src}: {e}")
+            tried.append(f"{src}:失败")
+            continue
+    return video_paths, tried
 
 
 def _run_montage_task(task_id: str, params: dict):
@@ -134,67 +207,13 @@ def _run_montage_task(task_id: str, params: dict):
             task["progress"] = 10
             task["message"] = f"正在搜索素材: {query}（来源: {source}）..."
 
-            # 多选来源：按顺序尝试，第一个成功返回片段的来源生效
-            source_list = p.get("sources") or [source]
-            source_list = [s for s in dict.fromkeys(source_list) if s]
-            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in (query or ""))
-            if has_cjk and "bilibili" in source_list:
-                source_list = ["bilibili"] + [s for s in source_list if s != "bilibili"]
-
-            video_paths = []
-            tried = []
-            for src in source_list:
-                if len(video_paths) >= clip_limit:
-                    break
-                # 中文关键词没必要去英文台词库空跑
-                if has_cjk and src in ("playphrase", "quodb"):
-                    tried.append(f"{src}:跳过")
-                    continue
-                if src == "quodb":
-                    tried.append("quodb:仅元数据")
-                    continue
-
-                task["message"] = f"正在搜索 {query}（来源: {src}）..."
-                task["progress"] = 12
-                try:
-                    if src == "playphrase":
-                        from packages.video_crawler.src.quote_crawler import create_quote_crawler
-                        crawler = create_quote_crawler(src)
-                        task["message"] = "正在启动浏览器搜索 PlayPhrase...首次可能较慢"
-                    elif src == "bilibili":
-                        from packages.video_crawler.src.bilibili_crawler import BilibiliCrawler
-                        crawler = BilibiliCrawler()
-                        task["message"] = "正在搜索 B站视频..."
-                    elif src == "youtube":
-                        from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
-                        crawler = YtdlpCrawler("youtube")
-                        task["message"] = "正在搜索 YouTube（需要代理）..."
-                    elif src == "dailymotion":
-                        from packages.video_crawler.src.ytdlp_crawler import YtdlpCrawler
-                        crawler = YtdlpCrawler("dailymotion")
-                        task["message"] = "正在搜索 Dailymotion..."
-                    else:
-                        from packages.video_crawler.src.ytdlp_crawler import create_crawler
-                        crawler = create_crawler(src)
-                        task["message"] = f"正在搜索 {src}..."
-
-                    remaining = max(1, clip_limit - len(video_paths))
-                    paths = crawler.search_and_download(query, max_clips=remaining)
-                    tried.append(f"{src}:{len(paths or [])}")
-                    for path in paths or []:
-                        if path not in video_paths:
-                            video_paths.append(path)
-                        if len(video_paths) >= clip_limit:
-                            break
-                    # 第一个有结果的源就够用了，避免多选时把每个源都跑一遍
-                    if video_paths:
-                        break
-                except Exception as e:
-                    print(f"[Crawler Error] task={task_id}, source={src}: {e}")
-                    tried.append(f"{src}:失败")
-                    continue
+            source_list = _build_source_list(
+                query, source, p.get("sources") or [source])
+            video_paths, tried = _crawl_sources(
+                query, source_list, clip_limit, task=task, task_id=task_id)
 
             if not video_paths:
+                has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in (query or ""))
                 if "bilibili" in source_list:
                     hint = (f"已尝试: {', '.join(tried) or '无可用来源'}。"
                             "B站也没有取到素材，请换关键词或稍后重试。")
@@ -360,6 +379,56 @@ def _run_montage_task(task_id: str, params: dict):
         raise
 
 
+def _run_materials_task(task_id: str, params: dict):
+    """只搜索/下载候选素材，不渲染，供用户挑选后再混剪。"""
+    from packages.montage.helpers import _probe_media_duration
+    from packages.task_queue import TaskError
+
+    p = {**_TASK_DEFAULTS, **(params or {})}
+    query = (p.get("query") or "").strip()
+    clip_limit = max(1, min(int(p.get("clip_limit") or 8), 30))
+    source = p.get("source") or "playphrase"
+    task = _store().handle(task_id)
+
+    if not query:
+        raise TaskError("请先输入搜索关键词", retryable=False)
+
+    task["status"] = "running"
+    task["progress"] = 10
+    task["message"] = f"正在搜索素材: {query}..."
+    source_list = _build_source_list(query, source, p.get("sources") or [source])
+    video_paths, tried = _crawl_sources(
+        query, source_list, clip_limit, task=task, task_id=task_id)
+
+    if not video_paths:
+        raise TaskError(
+            f"没有搜到素材（已尝试: {', '.join(tried) or '无可用来源'}）。",
+            retryable=False)
+
+    candidates = []
+    for path in video_paths:
+        pth = Path(path)
+        try:
+            duration = float(_probe_media_duration(path) or 0)
+        except Exception:
+            duration = 0.0
+        try:
+            size = pth.stat().st_size
+        except OSError:
+            size = 0
+        candidates.append({
+            "path": str(pth),
+            "name": pth.name,
+            "duration": round(duration, 2),
+            "size": size,
+            "selected": True,
+        })
+
+    task["result"] = {"candidates": candidates, "tried": tried}
+    task["progress"] = 100
+    task["message"] = f"找到 {len(candidates)} 个候选素材，可以挑选后混剪"
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     html_path = Path(__file__).parent / "index.html"
@@ -399,6 +468,55 @@ async def upload_bgm(file: UploadFile = File(...)):
     with open(dest, "wb") as fh:
         shutil.copyfileobj(file.file, fh)
     return {"path": str(dest)}
+
+
+@app.post("/api/materials")
+async def create_materials(
+    query: str = Form(...),
+    source: str = Form("playphrase"),
+    sources: Optional[str] = Form(None),
+    clip_limit: int = Form(8),
+):
+    """只搜索/下载候选素材，返回 task_id；用户挑选后再提交混剪。"""
+    allowed_sources = {
+        "playphrase", "quodb", "bilibili", "youtube", "dailymotion",
+        "douyin", "ixigua", "acfun", "vimeo", "yarn", "zhaotaici",
+    }
+    sources_list = []
+    if sources:
+        try:
+            parsed = json.loads(sources)
+            if isinstance(parsed, list):
+                sources_list = [str(s) for s in parsed if str(s) in allowed_sources]
+        except (TypeError, ValueError):
+            sources_list = []
+    if source in allowed_sources and source not in sources_list:
+        sources_list.insert(0, source)
+
+    task = _store().create(
+        kind="materials",
+        payload={
+            "query": query,
+            "source": source,
+            "sources": sources_list,
+            "clip_limit": max(1, min(int(clip_limit), 30)),
+        },
+        message="素材任务已创建，等待执行",
+    )
+    _store().enqueue(task["id"])
+    return {"task_id": task["id"]}
+
+
+@app.get("/api/media")
+def get_media(path: str):
+    """给候选素材卡片提供本地预览（限制在 var/ 运行目录内）。"""
+    p = Path(path).resolve()
+    roots = [CACHE_DIR.resolve(), UPLOAD_DIR.resolve(), OUTPUT_DIR.resolve()]
+    if not any(p.is_relative_to(root) for root in roots):
+        raise HTTPException(status_code=403, detail="forbidden path")
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="media not found")
+    return FileResponse(str(p), media_type="video/mp4")
 
 
 @app.post("/api/montage")

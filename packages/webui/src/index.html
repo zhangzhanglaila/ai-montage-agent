@@ -472,6 +472,71 @@
             transform: none;
             box-shadow: 5px 5px 0 #000;
         }
+        .btn-secondary {
+            background: #fff;
+            color: #1a1a1a;
+            box-shadow: 3px 3px 0 #000;
+        }
+        .btn-secondary:hover {
+            transform: translate(-1px, -1px);
+            box-shadow: 5px 5px 0 #000;
+        }
+        .btn-small {
+            padding: 8px 14px;
+            font-size: 0.85em;
+            letter-spacing: 0;
+        }
+        .material-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+        .material-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+            gap: 14px;
+        }
+        .material-card {
+            border: 3px solid #000;
+            background: #fff;
+            padding: 8px;
+            box-shadow: 3px 3px 0 #000;
+        }
+        .material-card video {
+            width: 100%;
+            height: 130px;
+            object-fit: cover;
+            background: #000;
+            display: block;
+            margin-bottom: 6px;
+        }
+        .material-card .material-name {
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.35;
+            max-height: 2.7em;
+            overflow: hidden;
+        }
+        .material-card .material-meta {
+            font-size: 12px;
+            color: #777;
+            margin: 4px 0 6px;
+        }
+        .material-card .material-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+        .material-card .material-del {
+            border: 2px solid #000;
+            background: #fff;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 2px 8px;
+        }
 
         /* ===== 进度条 ===== */
         .progress-container { display: none; }
@@ -676,7 +741,27 @@
                         </table>
                     </div>
                 </div>
+                <div style="margin-top:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <button class="btn btn-secondary btn-small" id="search-materials-btn"
+                            onclick="searchMaterials()">先搜素材 / 挑选</button>
+                    <span id="material-search-status" style="font-size:13px;color:#666;"></span>
+                </div>
             </div>
+        </div>
+
+        <!-- 1.5 候选素材 -->
+        <div class="card hidden" id="material-section">
+            <h2><span class="num">✂</span> 候选素材 <span id="material-count" style="font-size:0.7em;color:#FB7299;"></span></h2>
+            <div class="material-actions">
+                <button class="btn btn-secondary btn-small" onclick="selectAllMaterials(true)">全选</button>
+                <button class="btn btn-secondary btn-small" onclick="selectAllMaterials(false)">全不选</button>
+                <label class="btn btn-secondary btn-small" for="material-upload">＋ 添加本地视频</label>
+                <input type="file" id="material-upload" accept="video/*" multiple
+                       style="display:none" onchange="addLocalMaterials(this)">
+                <span style="font-size:13px;color:#666;">勾选想用的片段；不需要的可以删掉。</span>
+            </div>
+            <div class="material-grid" id="material-grid"></div>
+            <p id="material-empty" class="hidden" style="color:#888;">还没有候选素材，先点上面的“先搜素材 / 挑选”。</p>
         </div>
 
         <!-- 2. BGM -->
@@ -1030,6 +1115,169 @@
 
         function getSelectedSources() {
             return sources.filter(s => s.checked).map(s => s.value);
+        }
+
+        // ===== 候选素材（先搜再挑） =====
+        let materialCandidates = [];
+
+        function escapeHtml(s) {
+            return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+            }[c]));
+        }
+
+        function mediaUrl(path) {
+            return `/api/media?path=${encodeURIComponent(path)}`;
+        }
+
+        function formatDuration(sec) {
+            sec = Number(sec) || 0;
+            if (sec <= 0) return "时长未知";
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60);
+            return `${m}:${String(s).padStart(2, "0")}`;
+        }
+
+        function renderMaterials() {
+            const section = document.getElementById("material-section");
+            const grid = document.getElementById("material-grid");
+            const empty = document.getElementById("material-empty");
+            const count = document.getElementById("material-count");
+            if (!materialCandidates.length) {
+                section.classList.add("hidden");
+                grid.innerHTML = "";
+                return;
+            }
+            section.classList.remove("hidden");
+            const selected = materialCandidates.filter(m => m.selected).length;
+            count.textContent = `已选 ${selected}/${materialCandidates.length}`;
+            grid.innerHTML = materialCandidates.map((m, i) => `
+                <div class="material-card">
+                    <video src="${mediaUrl(m.path)}" preload="metadata" controls muted></video>
+                    <div class="material-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
+                    <div class="material-meta">${formatDuration(m.duration)} · ${(m.size / 1048576).toFixed(1)} MB</div>
+                    <div class="material-row">
+                        <label><input type="checkbox" ${m.selected ? "checked" : ""}
+                            onchange="setMaterialSelected(${i}, this.checked)"> 使用</label>
+                        <button class="material-del" onclick="removeMaterial(${i})">删除</button>
+                    </div>
+                </div>`).join("");
+        }
+
+        function setMaterialSelected(index, checked) {
+            if (materialCandidates[index]) materialCandidates[index].selected = checked;
+            renderMaterials();
+        }
+
+        function removeMaterial(index) {
+            materialCandidates.splice(index, 1);
+            renderMaterials();
+        }
+
+        function selectAllMaterials(checked) {
+            materialCandidates.forEach(m => { m.selected = checked; });
+            renderMaterials();
+        }
+
+        async function addLocalMaterials(input) {
+            const files = input.files;
+            if (!files || !files.length) return;
+            const paths = await uploadFiles(files);
+            for (const path of (paths || [])) {
+                materialCandidates.push({
+                    path,
+                    name: path.split(/[\\/]/).pop(),
+                    duration: 0,
+                    size: 0,
+                    selected: true,
+                });
+            }
+            input.value = "";
+            renderMaterials();
+            document.getElementById("material-section").scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
+        function buildSourceList(queryText) {
+            const isChinese = /[\u4e00-\u9fff]/.test(queryText);
+            let sourceList = [...getSelectedSources()];
+            if (isChinese && sourceList.includes("bilibili")) {
+                sourceList = ["bilibili", ...sourceList.filter(s => s !== "bilibili")];
+            } else if (isChinese &&
+                       sourceList.some(s => ["playphrase", "quodb"].includes(s))) {
+                sourceList = ["bilibili"];
+                sources.forEach(s => { s.checked = s.value === "bilibili"; });
+                renderSourceTable();
+                updateSelectedCount();
+                showToast("检测到中文关键词，已自动切换到 B站");
+            }
+            return sourceList;
+        }
+
+        async function searchMaterials() {
+            const query = document.getElementById("search-query");
+            const status = document.getElementById("material-search-status");
+            const btn = document.getElementById("search-materials-btn");
+            if (!query.value.trim()) {
+                shake(query);
+                showToast("请输入搜索关键词");
+                return;
+            }
+            const sourceList = buildSourceList(query.value.trim());
+            if (!sourceList.length) {
+                shake(document.querySelector(".source-toggle"));
+                showToast("请至少选择一个素材来源");
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = "搜索中...";
+            status.textContent = "正在搜索素材，B站下载可能需要 1～2 分钟...";
+            const fd = new FormData();
+            fd.append("query", query.value.trim());
+            fd.append("source", sourceList[0]);
+            fd.append("sources", JSON.stringify(sourceList));
+            fd.append("clip_limit", document.getElementById("clip-limit").value);
+
+            try {
+                const resp = await fetch("/api/materials", { method: "POST", body: fd });
+                if (!resp.ok) throw new Error(`服务器返回错误 (${resp.status})`);
+                const data = await resp.json();
+                const es = new EventSource(`/api/task/${data.task_id}/progress`);
+                es.onmessage = async (e) => {
+                    const t = JSON.parse(e.data);
+                    status.textContent = t.message || "搜索中...";
+                    if (t.status === "done") {
+                        es.close();
+                        btn.disabled = false;
+                        btn.textContent = "先搜素材 / 挑选";
+                        try {
+                            const full = await (await fetch(`/api/task/${data.task_id}`)).json();
+                            materialCandidates = ((full.result || {}).candidates || []).map(x => ({ ...x, selected: true }));
+                            renderMaterials();
+                            status.textContent = materialCandidates.length
+                                ? `找到 ${materialCandidates.length} 个候选，勾选后开始混剪`
+                                : "没有找到候选素材";
+                            document.getElementById("material-section").scrollIntoView({ behavior: "smooth", block: "start" });
+                        } catch (err) {
+                            status.textContent = "读取候选素材失败: " + err.message;
+                        }
+                    } else if (t.status === "error" || t.status === "canceled") {
+                        es.close();
+                        btn.disabled = false;
+                        btn.textContent = "先搜素材 / 挑选";
+                        status.textContent = "❌ " + (t.message || "搜索失败");
+                    }
+                };
+                es.onerror = () => {
+                    es.close();
+                    btn.disabled = false;
+                    btn.textContent = "先搜素材 / 挑选";
+                };
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = "先搜素材 / 挑选";
+                status.textContent = "❌ " + e.message;
+            }
         }
 
         // 展开/收起来源表格
@@ -1412,6 +1660,17 @@
                 const stylePreset = document.getElementById("style-preset-value").value;
                 const selectedSources = getSelectedSources();
 
+                // 候选素材模式：用户已经挑选过，直接用选中的本地路径，不再重新爬取
+                if (sourceMode === "search" && materialCandidates.length) {
+                    const selectedMaterials = materialCandidates.filter(m => m.selected);
+                    if (!selectedMaterials.length) {
+                        showToast("请至少勾选一个候选素材");
+                        btn.disabled = false; btn.textContent = "开始混剪";
+                        stopElapsedTimer(); return;
+                    }
+                    videoPaths = selectedMaterials.map(m => m.path);
+                }
+
                 const formData = new FormData();
                 formData.append("video_paths", JSON.stringify(videoPaths || []));
                 formData.append("style", style);
@@ -1431,7 +1690,7 @@
                     formData.append("bgm_query", bgmQuery.value);
                 }
 
-                if (sourceMode === "search") {
+                if (sourceMode === "search" && !(videoPaths && videoPaths.length)) {
                     const query = document.getElementById("search-query");
                     if (!query.value.trim()) {
                         shake(query);
@@ -1446,21 +1705,7 @@
                         stopElapsedTimer(); return;
                     }
                     const queryText = query.value.trim();
-                    const isChinese = /[\u4e00-\u9fff]/.test(queryText);
-                    let sourceList = [...selectedSources];
-
-                    if (isChinese && sourceList.includes("bilibili")) {
-                        // 中文优先 B站，避免先去英文台词库空跑
-                        sourceList = ["bilibili", ...sourceList.filter(s => s !== "bilibili")];
-                    } else if (isChinese &&
-                               sourceList.some(s => ["playphrase", "quodb"].includes(s))) {
-                        // 只选了英文台词库时，自动切到 B站
-                        sourceList = ["bilibili"];
-                        sources.forEach(s => { s.checked = s.value === "bilibili"; });
-                        renderSourceTable();
-                        updateSelectedCount();
-                        showToast("检测到中文关键词，已自动切换到 B站");
-                    }
+                    const sourceList = buildSourceList(queryText);
 
                     formData.append("query", queryText);
                     formData.append("source", sourceList[0]);
