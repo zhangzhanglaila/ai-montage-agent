@@ -14,6 +14,10 @@
 
 **语言 / Language:** [简体中文](#简体中文) · [English](#english)
 
+<p align="center">
+  <img src="README.assets/webui-materials-showcase.png" alt="WebUI 素材搜索与候选挑选" width="900">
+</p>
+
 ---
 
 # 简体中文
