@@ -14,16 +14,13 @@
 
 **语言 / Language:** [简体中文](#简体中文) · [English](#english)
 
-<p align="center">
-  <img src="README.assets/webui-materials-finished.png" alt="WebUI 素材挑选与混剪成片" width="900">
-</p>
-
 ---
 
 # 简体中文
 
 - [功能特性](#功能特性)
 - [为什么用它](#为什么用它)
+- [效果展示](#效果展示)
 - [快速开始](#快速开始)
 - [参数说明](#参数说明)
 - [素材来源](#素材来源)
@@ -57,6 +54,14 @@
 - ✅ **不是简单拼接**：5 维高光评分先筛镜头，再排时间轴。
 - ✅ **不是只有画面**：音效卡点、BGM 闪避、字幕、调色一起完成。
 - ✅ **不是只适合横屏**：主体跟踪自动裁竖屏，直接发短视频。
+
+## 效果展示
+
+从搜索素材、挑选 5 个候选，到确认素材并生成成片：
+
+<p align="center">
+  <img src="README.assets/webui-materials-finished.png" alt="WebUI 素材挑选与混剪成片" width="820">
+</p>
 
 ## 快速开始
 
@@ -353,6 +358,8 @@ ai-montage-agent/
 - ✅ **Not just stitching** — 5-axis highlight scoring picks shots before the timeline.
 - ✅ **Not just video** — SFX, BGM ducking, subtitles, and color are handled together.
 - ✅ **Not landscape-only** — subject tracking auto-reframes to vertical for short-form.
+
+> UI showcase: [see the full-page screenshot](#效果展示) in the Chinese section.
 
 ## Quick Start
 
