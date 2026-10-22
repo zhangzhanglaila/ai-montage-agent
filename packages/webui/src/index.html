@@ -752,7 +752,7 @@
         <!-- 1.5 候选素材 -->
         <div class="card hidden" id="material-section">
             <h2><span class="num">2</span> 候选素材 <span id="material-count" style="font-size:0.7em;color:#FB7299;"></span></h2>
-            <p style="font-size:13px;color:#666;margin-bottom:12px;">
+            <p id="material-step-note" style="font-size:13px;color:#666;margin-bottom:12px;">
                 已停在第 2 步：不会自动开始混剪。勾选想用的片段，不需要的可以删掉。
             </p>
             <div class="material-actions">
@@ -765,6 +765,7 @@
             <div class="material-grid" id="material-grid"></div>
             <p id="material-empty" class="hidden" style="color:#888;">还没有候选素材，先点上面的“① 搜索素材并挑选”。</p>
             <button class="btn btn-secondary" style="width:100%;margin-top:16px"
+                    id="confirm-materials-btn"
                     onclick="confirmMaterials()">② 确认素材，继续设置 ↓</button>
         </div>
 
@@ -1166,6 +1167,12 @@
             }
             materialsConfirmed = true;
             updateSubmitHint();
+            const note = document.getElementById("material-step-note");
+            if (note) note.textContent = `已确认 ${selected.length} 个素材，进入第 3 步：设置 BGM / 风格。`;
+            document.getElementById("material-search-status").textContent =
+                `已确认 ${selected.length} 个素材，可以开始混剪`;
+            const confirmBtn = document.getElementById("confirm-materials-btn");
+            if (confirmBtn) confirmBtn.textContent = "✓ 已确认，继续设置 ↓";
             showToast(`已确认 ${selected.length} 个素材，继续设置 BGM / 风格`);
             document.getElementById("bgm-card").scrollIntoView({ behavior: "smooth", block: "start" });
         }
@@ -1293,6 +1300,10 @@
                             materialCandidates = ((full.result || {}).candidates || []).map(x => ({ ...x, selected: true }));
                             materialsConfirmed = false;
                             renderMaterials();
+                            const note = document.getElementById("material-step-note");
+                            if (note) note.textContent = "已停在第 2 步：不会自动开始混剪。勾选想用的片段，不需要的可以删掉。";
+                            const confirmBtn = document.getElementById("confirm-materials-btn");
+                            if (confirmBtn) confirmBtn.textContent = "② 确认素材，继续设置 ↓";
                             status.textContent = materialCandidates.length
                                 ? `已找到 ${materialCandidates.length} 个候选，已停在第 2 步，请挑选后点“确认素材”`
                                 : "没有找到候选素材";
