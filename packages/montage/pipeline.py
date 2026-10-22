@@ -420,6 +420,8 @@ class MontagePipeline:
         clean_black: bool = True,
         target_duration: Optional[float] = None,
         mute_source_audio: bool = False,
+        max_source_duration: Optional[float] = None,
+        progress_callback=None,
     ) -> str:
         """
         运行完整混剪流程
@@ -463,10 +465,53 @@ class MontagePipeline:
         print("AI Montage Agent - 开始混剪")
         print("=" * 50)
 
+        def _progress(pct: float, msg: str):
+            if progress_callback:
+                try:
+                    progress_callback(float(pct), msg)
+                except Exception:
+                    pass
+
+        _progress(2, "准备素材...")
+
         # Step 1: 检测镜头
         print(f"\n[1/6] 检测镜头 (阈值: {threshold})...")
         if not video_paths:
             raise ValueError("没有可用的视频文件，请检查搜索关键词或上传文件")
+
+        # 20 个 5~10 分钟的 B 站素材如果全量分析，会跑几十分钟；
+        # 混剪只需要每个源里的高光片段，默认只分析前 N 秒。
+        if max_source_duration and max_source_duration > 0:
+            trim_dir = Path(self.cache_dir) / "trim"
+            trim_dir.mkdir(parents=True, exist_ok=True)
+            capped = []
+            for vp in video_paths:
+                try:
+                    dur = _probe_media_duration(vp)
+                    if dur and dur > max_source_duration:
+                        src = Path(vp)
+                        out = trim_dir / (
+                            f"{src.stem}_{int(max_source_duration)}s_"
+                            f"{int(src.stat().st_mtime)}.mp4"
+                        )
+                        if not out.exists():
+                            r = subprocess.run(
+                                ["ffmpeg", "-y", "-v", "error",
+                                 "-t", str(max_source_duration), "-i", str(src),
+                                 "-c", "copy", "-avoid_negative_ts", "make_zero",
+                                 str(out)],
+                                capture_output=True,
+                            )
+                            if r.returncode != 0 or not out.exists():
+                                out = src
+                        capped.append(str(out))
+                    else:
+                        capped.append(vp)
+                except Exception as e:
+                    print(f"  截取素材失败（用原片）: {e}")
+                    capped.append(vp)
+            video_paths = capped
+            _progress(8, f"已截取 {len(video_paths)} 个素材片段...")
 
         # 自动去黑场：先把源里的黑段删掉，避免黑帧被切进镜头
         if clean_black:
@@ -478,12 +523,17 @@ class MontagePipeline:
                     print(f"  去黑场失败（跳过）: {e}")
                     cleaned.append(vp)
             video_paths = cleaned
+            _progress(12, "去黑场完成...")
 
         all_shots = []
+        total_videos = max(1, len(video_paths))
         for video_idx, video_path in enumerate(video_paths):
             print(f"  处理视频: {Path(video_path).name}")
+            _progress(12 + 18 * video_idx / total_videos,
+                      f"检测镜头 {video_idx + 1}/{total_videos}...")
             shots = self.shot_detector.detect(video_path, threshold=threshold, video_index=video_idx)
             all_shots.extend(shots)
+        _progress(30, f"镜头检测完成，共 {len(all_shots)} 个镜头")
 
         if not all_shots:
             raise ValueError("没有检测到任何镜头，视频文件可能损坏或格式不支持")
@@ -493,16 +543,19 @@ class MontagePipeline:
         for shot in all_shots:
             motion = self.motion_analyzer.analyze(shot.file_path)
             shot.motion_score = motion.magnitude
+        _progress(38, f"运动分析完成（{len(all_shots)} 个镜头）...")
 
         # Step 3: 评分高光
         print("\n[3/6] 评分高光...")
         for shot in all_shots:
             motion = MotionData(magnitude=shot.motion_score)
             shot.highlight_score = self.scorer.score(shot, motion)
+        _progress(45, "高光评分完成...")
 
         # Step 4: 分析 BGM
         print("\n[4/6] 分析 BGM...")
         beat_analysis = self.beat_analyzer.analyze(bgm_path)
+        _progress(55, "BGM 节拍分析完成...")
 
         # 关键：把 BGM 的第一个节拍对齐到视频 0s。
         # 原来时间线从 "第一个检测到的节拍"（这首歌是 3.18s）开始，而渲染器
@@ -594,6 +647,7 @@ class MontagePipeline:
 
         # Step 6: 渲染
         print("\n[6/6] 渲染输出...")
+        _progress(65, "开始渲染视频...")
         out_p = Path(output_name)
         if out_p.parent and str(out_p.parent) != ".":
             output_path = str(out_p)
@@ -690,6 +744,7 @@ class MontagePipeline:
         print(f"节拍数量: {len(beat_analysis.beats)}")
         print(f"BPM: {beat_analysis.tempo:.1f}")
         print("=" * 50)
+        _progress(100, "混剪完成")
 
         return result
 

@@ -263,6 +263,13 @@ def _run_montage_task(task_id: str, params: dict):
         min_shot_gap, max_per_video = density_map.get(shot_density, (1.0, 15))
 
         pipeline = MontagePipeline(cache_dir=str(CACHE_DIR), output_dir=str(OUTPUT_DIR))
+
+        def _on_pipeline_progress(pct: float, msg: str):
+            # pipeline 内部 0~100 → 任务总进度 30~85
+            task["progress"] = max(30, min(85, int(30 + pct * 0.55)))
+            if msg:
+                task["message"] = msg
+
         result = pipeline.run(
             video_paths, bgm_path, style, output_name,
             threshold=threshold,
@@ -278,6 +285,10 @@ def _run_montage_task(task_id: str, params: dict):
             target_duration=target_duration or None,
             mute_source_audio=mute_source,
             transition_pattern=trans_pattern,
+            # 混剪不需要对每个 5~10 分钟的源全量做镜头检测；
+            # 20 个源全量分析会跑几十分钟，先截前 120 秒。
+            max_source_duration=120,
+            progress_callback=_on_pipeline_progress,
         )
 
         # ===== 阶段 4：后处理 =====
